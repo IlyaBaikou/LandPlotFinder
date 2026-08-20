@@ -1,0 +1,6 @@
+[build]
+builder = "DOCKERFILE"
+
+[deploy]
+startCommand = "python -m app.cli check-config"
+restartPolicyType = "NEVER"

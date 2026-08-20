@@ -1,0 +1,166 @@
+<!doctype html>
+<html lang="ru">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1">
+  <meta name="theme-color" content="#31473a">
+  <title>LandPlotFinder — поиск участка</title>
+  <meta name="description" content="Локальная панель мониторинга объявлений о земельных участках">
+  <link rel="preconnect" href="https://unpkg.com">
+  <link rel="stylesheet" href="https://unpkg.com/leaflet@1.9.4/dist/leaflet.css">
+  <link rel="stylesheet" href="/static/styles.css">
+</head>
+<body>
+  <div class="app-shell">
+    <aside class="sidebar">
+      <a class="brand" href="#dashboard" aria-label="LandPlotFinder">
+        <span class="brand-mark">⌂</span>
+        <span><strong>LandPlot</strong><small>Finder</small></span>
+      </a>
+
+      <nav class="nav" aria-label="Основная навигация">
+        <button class="nav-item active" data-view="dashboard"><span>⌁</span>Обзор</button>
+        <button class="nav-item" data-view="listings"><span>▤</span>Объекты</button>
+        <button class="nav-item" data-view="map"><span>⌖</span>Карта</button>
+        <button class="nav-item" data-view="settings"><span>⚙</span>Настройки</button>
+      </nav>
+
+      <div class="sidebar-footer">
+        <div class="service-state"><i id="serviceDot"></i><span id="serviceText">Локальный сервис</span></div>
+        <small>Данные хранятся на этом компьютере</small>
+      </div>
+    </aside>
+
+    <main class="main">
+      <header class="topbar">
+        <button class="mobile-menu" id="mobileMenu" aria-label="Открыть меню">☰</button>
+        <div>
+          <p class="eyebrow" id="pageEyebrow">Ваш поиск</p>
+          <h1 id="pageTitle">Добрый день</h1>
+        </div>
+        <div class="top-actions">
+          <div class="job-pill" id="jobPill"><span></span><b>В ожидании</b></div>
+          <button class="button primary" id="scanButton">▶ Запустить поиск</button>
+        </div>
+      </header>
+
+      <section class="view active" id="view-dashboard">
+        <div class="hero-card">
+          <div>
+            <p class="eyebrow">Короткий список</p>
+            <h2>Найдём место, которое хочется назвать своим</h2>
+            <p>Сервис проверяет Realt и Kufar, считает расстояние, убирает дубли и показывает только подходящие варианты.</p>
+          </div>
+          <button class="button light" data-go="listings">Смотреть объекты →</button>
+        </div>
+
+        <div class="stats-grid">
+          <article class="stat-card"><span>Активных</span><strong id="statActive">—</strong><small>объявлений в базе</small></article>
+          <article class="stat-card accent"><span>Сильных</span><strong id="statStrong">—</strong><small>оценка 80 и выше</small></article>
+          <article class="stat-card"><span>Вы выбрали</span><strong id="statSelected">—</strong><small>понравилось и изучаем</small></article>
+          <article class="stat-card muted"><span>В архиве</span><strong id="statArchived">—</strong><small>сняты с публикации</small></article>
+        </div>
+
+        <div class="dashboard-grid">
+          <section class="panel">
+            <div class="panel-head"><div><p class="eyebrow">Лучшие совпадения</p><h3>Стоит посмотреть</h3></div><button class="text-button" data-go="listings">Все объекты</button></div>
+            <div class="listing-stack" id="dashboardListings"><div class="empty">Загружаем подборку…</div></div>
+          </section>
+          <aside class="panel activity-panel">
+            <div class="panel-head"><div><p class="eyebrow">Автоматизация</p><h3>Работа сервиса</h3></div></div>
+            <div id="jobDetails" class="job-details"></div>
+            <button class="button secondary full" id="activityButton">Проверить актуальность</button>
+            <a class="button ghost full" href="/api/export.csv">Скачать CSV</a>
+          </aside>
+        </div>
+      </section>
+
+      <section class="view" id="view-listings">
+        <div class="filterbar">
+          <label class="search-field"><span>⌕</span><input id="searchInput" placeholder="Посёлок, район или описание"></label>
+          <select id="decisionFilter" aria-label="Статус решения">
+            <option value="all">Все решения</option><option value="new">Не разобрано</option><option value="liked">Приглянулось</option><option value="studying">Изучаем</option><option value="trip">К поездке</option><option value="rejected">Отказ</option>
+          </select>
+          <select id="sourceFilter" aria-label="Источник"><option value="all">Все источники</option><option value="realt">Realt</option><option value="kufar">Kufar</option><option value="realt_auction">Аукционы</option></select>
+          <select id="activeFilter" aria-label="Актуальность"><option value="active">Актуальные</option><option value="archived">Архив</option><option value="all">Все</option></select>
+        </div>
+        <div class="results-head"><p id="resultsCount">Загрузка…</p><div class="score-filter"><label for="scoreInput">Оценка от</label><input id="scoreInput" type="range" min="0" max="100" value="0"><b id="scoreValue">0</b></div></div>
+        <div class="cards-grid" id="listingsGrid"></div>
+        <div class="pagination" id="pagination"></div>
+      </section>
+
+      <section class="view map-view" id="view-map">
+        <div class="map-toolbar"><div><p class="eyebrow">Маршрут исследования</p><h2>Все участки на карте</h2></div><p>Цвет точки показывает ваше решение</p></div>
+        <div id="map" aria-label="Карта участков"></div>
+        <div class="map-legend"><span><i class="pin new"></i>Новые</span><span><i class="pin liked"></i>Приглянулись</span><span><i class="pin trip"></i>К поездке</span></div>
+      </section>
+
+      <section class="view" id="view-settings">
+        <form class="settings-layout" id="settingsForm">
+          <div class="panel settings-main">
+            <div class="panel-head"><div><p class="eyebrow">Критерии поиска</p><h3>Какой участок ищем</h3></div></div>
+            <div class="form-grid">
+              <label><span>Желаемая цена, USD</span><input name="target_price_usd" type="number" min="0" required></label>
+              <label><span>Максимальная цена, USD</span><input name="max_price_usd" type="number" min="1" required></label>
+              <label><span>Площадь от, соток</span><input name="min_area_sotok" type="number" min="0.1" step="0.1" required></label>
+              <label><span>Площадь до, соток</span><input name="max_area_sotok" type="number" min="0.1" step="0.1" required></label>
+              <label><span>До города/кольцевой, км</span><input name="max_distance_km" type="number" min="0" step="0.5" required></label>
+              <label><span>Желаемая мощность, кВт</span><input name="primary_electricity_kw" type="number" min="0" step="1" required></label>
+            </div>
+            <div class="form-section">
+              <h4>Источники</h4>
+              <div class="check-grid">
+                <label class="check-card"><input type="checkbox" name="sources" value="realt"><span><b>Realt.by</b><small>Участки, дома и дачи</small></span></label>
+                <label class="check-card"><input type="checkbox" name="sources" value="kufar"><span><b>Kufar</b><small>Частные объявления</small></span></label>
+                <label class="check-card"><input type="checkbox" name="sources" value="realt_auction"><span><b>Аукционы Realt</b><small>Опциональный источник</small></span></label>
+                <label class="check-card"><input type="checkbox" name="sources" value="rlt_auction"><span><b>RLT</b><small>Опциональный источник</small></span></label>
+                <label class="check-card"><input type="checkbox" name="sources" value="e_auction"><span><b>e-auction.by</b><small>Опциональный источник</small></span></label>
+              </div>
+            </div>
+          </div>
+          <aside class="settings-side">
+            <div class="panel">
+              <p class="eyebrow">Расписание</p><h3>Автопоиск</h3>
+              <label class="toggle-row"><span><b>Работать автоматически</b><small>Поиск запускается, пока приложение включено</small></span><input type="checkbox" name="schedule_enabled" class="toggle"></label>
+              <label><span>Повторять каждые, часов</span><input name="schedule_interval_hours" type="number" min="1" max="168"></label>
+              <label class="toggle-row"><span><b>Проверять актуальность</b><small>Снятые объявления уйдут в архив</small></span><input type="checkbox" name="activity_check_enabled" class="toggle"></label>
+            </div>
+            <div class="panel">
+              <p class="eyebrow">Необязательно</p><h3>Telegram</h3>
+              <label class="toggle-row"><span><b>Присылать уведомления</b></span><input type="checkbox" name="telegram_enabled" class="toggle"></label>
+              <label><span>Токен бота</span><input name="telegram_bot_token" type="password" autocomplete="off"></label>
+              <label><span>ID чата</span><input name="telegram_chat_id" autocomplete="off"></label>
+            </div>
+            <button class="button primary full" type="submit">Сохранить настройки</button>
+          </aside>
+        </form>
+      </section>
+    </main>
+  </div>
+
+  <div class="modal-backdrop hidden" id="setupModal">
+    <form class="setup-card" id="setupForm">
+      <div class="setup-mark">⌂</div><p class="eyebrow">Первый запуск</p><h2>Настроим ваш поиск</h2><p>Выберите основные критерии. Их можно изменить в любой момент.</p>
+      <div class="setup-grid">
+        <label><span>Бюджет до, USD</span><input name="max_price_usd" type="number" value="40000" min="1" required></label>
+        <label><span>Площадь от, соток</span><input name="min_area_sotok" type="number" value="9" min="0.1" step="0.1" required></label>
+        <label><span>Площадь до, соток</span><input name="max_area_sotok" type="number" value="15" min="0.1" step="0.1" required></label>
+        <label><span>Расстояние до, км</span><input name="max_distance_km" type="number" value="30" min="0" required></label>
+      </div>
+      <label class="toggle-row setup-toggle"><span><b>Автоматический поиск</b><small>Каждые 6 часов, пока приложение включено</small></span><input type="checkbox" name="schedule_enabled" class="toggle" checked></label>
+      <button class="button primary full" type="submit">Сохранить и начать</button>
+      <small class="privacy-note">Никакие данные не отправляются разработчику.</small>
+    </form>
+  </div>
+
+  <aside class="drawer" id="detailDrawer" aria-hidden="true">
+    <button class="drawer-close" id="drawerClose" aria-label="Закрыть">×</button>
+    <div id="drawerContent"></div>
+  </aside>
+  <div class="drawer-shade" id="drawerShade"></div>
+  <div class="toast" id="toast" role="status"></div>
+
+  <script src="https://unpkg.com/leaflet@1.9.4/dist/leaflet.js"></script>
+  <script src="/static/app.js"></script>
+</body>
+</html>

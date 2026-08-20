@@ -1,0 +1,28 @@
+services:
+  landplotfinder:
+    build: .
+    container_name: landplotfinder
+    restart: unless-stopped
+    ports:
+      - "127.0.0.1:8787:8787"
+    environment:
+      DATABASE_URL: sqlite:////data/landplots.db
+      WEB_HOST: 0.0.0.0
+      WEB_PORT: 8787
+      LOG_LEVEL: INFO
+    volumes:
+      - landplotfinder_data:/data
+    healthcheck:
+      test:
+        - CMD
+        - python
+        - -c
+        - "import urllib.request; urllib.request.urlopen('http://127.0.0.1:8787/health', timeout=3)"
+      interval: 15s
+      timeout: 5s
+      retries: 5
+      start_period: 10s
+
+volumes:
+  landplotfinder_data:
+    name: landplotfinder_data
