@@ -14,6 +14,7 @@ def test_web_config_is_persisted_in_local_database(tmp_path) -> None:
 
     initial = load_web_config(database_url)
     assert initial["configured"] is False
+    assert initial["map_provider"] == "google"
 
     saved = save_web_config(
         database_url,
@@ -21,12 +22,18 @@ def test_web_config_is_persisted_in_local_database(tmp_path) -> None:
             "max_price_usd": 55_000,
             "sources": ["realt", "unknown"],
             "schedule_interval_hours": 4,
+            "map_provider": "yandex",
         },
     )
 
     assert saved["configured"] is True
     assert load_web_config(database_url)["max_price_usd"] == 55_000
     assert load_web_config(database_url)["sources"] == ["realt"]
+    assert load_web_config(database_url)["map_provider"] == "yandex"
+
+
+def test_unknown_map_provider_falls_back_to_google() -> None:
+    assert normalize_web_config({"map_provider": "unknown"})["map_provider"] == "google"
 
 
 def test_runtime_settings_apply_ui_filters_to_sources(tmp_path) -> None:

@@ -93,7 +93,7 @@
       </section>
 
       <section class="view map-view" id="view-map">
-        <div class="map-toolbar"><div><p class="eyebrow">Маршрут исследования</p><h2>Все участки на карте</h2></div><button class="button secondary" id="buildTripButton">Построить маршрут «К поездке»</button></div>
+        <div class="map-toolbar"><div><p class="eyebrow">Маршрут исследования</p><h2>Все участки на карте</h2></div><div class="map-actions"><small id="mapProviderHint">Использовать: Google Maps</small><button class="button secondary" id="buildTripButton">Построить маршрут «К поездке»</button></div></div>
         <div id="map" aria-label="Карта участков"></div>
         <div class="map-legend"><span><i class="pin new"></i>Новые</span><span><i class="pin liked"></i>Приглянулись</span><span><i class="pin trip"></i>К поездке</span></div>
         <div class="route-results" id="routeResults"></div>
@@ -130,6 +130,11 @@
             </div>
           </div>
           <aside class="settings-side">
+            <div class="panel">
+              <p class="eyebrow">Навигация</p><h3>Карты</h3>
+              <label><span>Открывать точки и маршруты в</span><select name="map_provider"><option value="google">Google Maps</option><option value="yandex">Яндекс Карты</option></select></label>
+              <small class="settings-help">Встроенная карта остаётся доступной без ключей и регистрации.</small>
+            </div>
             <div class="panel">
               <p class="eyebrow">Расписание</p><h3>Автопоиск</h3>
               <label class="toggle-row"><span><b>Работать автоматически</b><small>Поиск запускается, пока приложение включено</small></span><input type="checkbox" name="schedule_enabled" class="toggle"></label>

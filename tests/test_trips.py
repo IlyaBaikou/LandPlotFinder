@@ -4,7 +4,10 @@ from app.integrations.trips import (
     TripPoint,
     build_trip_routes,
     google_maps_route_url,
+    maps_pin_url,
+    maps_route_url,
     parse_coordinates,
+    yandex_maps_route_url,
 )
 
 
@@ -59,6 +62,29 @@ def test_google_maps_route_uses_three_waypoints_and_destination() -> None:
     assert query["waypoints"] == [
         "|".join(item.coordinates for item in points[:-1])
     ]
+
+
+def test_yandex_maps_route_starts_at_current_location_and_keeps_all_stops() -> None:
+    points = [point(1, 54.0, 27.5), point(2, 54.1, 27.6)]
+
+    url = yandex_maps_route_url(points)
+    query = parse_qs(urlsplit(url).query)
+
+    assert urlsplit(url).netloc == "yandex.ru"
+    assert query["rtext"] == [f"~{points[0].coordinates}~{points[1].coordinates}"]
+    assert query["rtt"] == ["auto"]
+    assert maps_route_url(points, "yandex") == url
+
+
+def test_map_provider_selects_yandex_pin_and_falls_back_to_google() -> None:
+    selected = point(1, 54.0, 27.5)
+
+    yandex = urlsplit(maps_pin_url(selected, "yandex"))
+    google = urlsplit(maps_pin_url(selected, "unsupported"))
+
+    assert yandex.netloc == "yandex.ru"
+    assert parse_qs(yandex.query)["pt"] == ["27.5000000,54.0000000"]
+    assert google.netloc == "www.google.com"
 
 
 def test_parses_only_valid_coordinates() -> None:

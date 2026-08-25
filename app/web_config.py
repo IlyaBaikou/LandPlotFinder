@@ -18,6 +18,7 @@ DEFAULT_WEB_CONFIG: Dict[str, Any] = {
     "schedule_enabled": True,
     "schedule_interval_hours": 6,
     "activity_check_enabled": True,
+    "map_provider": "google",
     "sources": ["realt", "kufar"],
     "target_price_usd": 20_000,
     "max_price_usd": 40_000,
@@ -208,6 +209,11 @@ def normalize_web_config(payload: Dict[str, Any]) -> Dict[str, Any]:
     result["configured"] = bool(result.get("configured"))
     result["schedule_enabled"] = bool(result.get("schedule_enabled"))
     result["activity_check_enabled"] = bool(result.get("activity_check_enabled"))
+    result["map_provider"] = (
+        str(result.get("map_provider") or "google").strip().lower()
+    )
+    if result["map_provider"] not in {"google", "yandex"}:
+        result["map_provider"] = "google"
     result["telegram_enabled"] = bool(result.get("telegram_enabled"))
     stored_profiles = result.get("profiles")
     if isinstance(stored_profiles, list) and stored_profiles:

@@ -8,7 +8,7 @@ import os
 from contextlib import asynccontextmanager, contextmanager
 from datetime import datetime
 from pathlib import Path
-from typing import Any, Dict, List, Optional
+from typing import Any, Dict, List, Literal, Optional
 
 import uvicorn
 from fastapi import FastAPI, HTTPException, Query, Request, status
@@ -26,7 +26,13 @@ from app.backups import (
 )
 from app.config import Settings, load_settings
 from app.db import init_db, make_engine, make_session_factory, session_scope
-from app.integrations.trips import TripPoint, build_trip_routes, google_maps_route_url
+from app.integrations.trips import (
+    TripPoint,
+    build_trip_routes,
+    map_provider_label,
+    maps_pin_url,
+    maps_route_url,
+)
 from app.jobs import JobCoordinator
 from app.models import (
     ListingActivityModel,
@@ -62,6 +68,7 @@ class SettingsPayload(BaseModel):
     schedule_enabled: bool = True
     schedule_interval_hours: int = Field(default=6, ge=1, le=168)
     activity_check_enabled: bool = True
+    map_provider: Literal["google", "yandex"] = "google"
     sources: List[str]
     target_price_usd: float = Field(default=20_000, ge=0)
     max_price_usd: float = Field(default=40_000, gt=0)
@@ -486,6 +493,7 @@ def create_app(settings: Optional[Settings] = None) -> FastAPI:
     @app.get("/api/map")
     def map_points(profile_id: Optional[str] = None) -> Dict[str, Any]:
         config = load_web_config(base_settings.database_url)
+        map_provider = config["map_provider"]
         selected_profile_id = _selected_profile_id(config, profile_id)
         with _database(base_settings) as session:
             rows = session.execute(
@@ -509,8 +517,10 @@ def create_app(settings: Optional[Settings] = None) -> FastAPI:
                 .order_by(ListingProfileModel.score.desc())
                 .limit(1000)
             ).all()
-            return {
-                "items": [
+            items = []
+            for listing, decision, match in rows:
+                point = _trip_point(listing, decision)
+                items.append(
                     {
                         "id": listing.id,
                         "title": listing.title,
@@ -521,9 +531,13 @@ def create_app(settings: Optional[Settings] = None) -> FastAPI:
                         "score": match.score,
                         "url": listing.canonical_url,
                         "decision": decision.state if decision else "new",
+                        "map_url": maps_pin_url(point, map_provider),
                     }
-                    for listing, decision, match in rows
-                ]
+                )
+            return {
+                "map_provider": map_provider,
+                "map_provider_label": map_provider_label(map_provider),
+                "items": items,
             }
 
     @app.get("/api/source-health")
@@ -597,10 +611,12 @@ def create_app(settings: Optional[Settings] = None) -> FastAPI:
         )
         return {
             "points": len(points),
+            "map_provider": config["map_provider"],
+            "map_provider_label": map_provider_label(config["map_provider"]),
             "routes": [
                 {
                     "index": index,
-                    "url": google_maps_route_url(route),
+                    "url": maps_route_url(route, config["map_provider"]),
                     "distance_km": round(_route_distance(route, payload), 1),
                     "items": [
                         {
@@ -815,11 +831,11 @@ def _selected_profile_id(config: Dict[str, Any], profile_id: Optional[str]) -> s
 
 def _trip_point(
     listing: ListingModel,
-    decision: ListingDecisionModel,
+    decision: Optional[ListingDecisionModel],
 ) -> TripPoint:
     return TripPoint(
         external_id=str(listing.id),
-        status=decision.state,
+        status=decision.state if decision else "new",
         source=listing.source,
         listing_url=listing.canonical_url,
         district=listing.district or "",

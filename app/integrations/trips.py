@@ -15,6 +15,11 @@ TRIP_STATUSES = {
     "избранное",
 }
 MINSK_CENTER = (53.9006, 27.5590)
+MAP_PROVIDERS = {"google", "yandex"}
+MAP_PROVIDER_LABELS = {
+    "google": "Google Maps",
+    "yandex": "Яндекс Карты",
+}
 
 
 @dataclass(frozen=True)
@@ -368,6 +373,48 @@ def google_maps_pin_url(point: TripPoint) -> str:
     return "https://www.google.com/maps/search/?" + urlencode(
         {"api": "1", "query": point.coordinates}
     )
+
+
+def yandex_maps_route_url(points: Sequence[TripPoint]) -> str:
+    """Build a web route that starts from the user's current location."""
+    if not points:
+        return ""
+    params = {
+        "rtext": "~" + "~".join(point.coordinates for point in points),
+        "rtt": "auto",
+    }
+    return "https://yandex.ru/maps/?" + urlencode(params)
+
+
+def yandex_maps_pin_url(point: TripPoint) -> str:
+    return "https://yandex.ru/maps/?" + urlencode(
+        {
+            "pt": f"{point.longitude:.7f},{point.latitude:.7f}",
+            "z": "16",
+            "l": "map",
+        }
+    )
+
+
+def normalize_map_provider(value: object) -> str:
+    provider = str(value or "").strip().lower()
+    return provider if provider in MAP_PROVIDERS else "google"
+
+
+def map_provider_label(provider: object) -> str:
+    return MAP_PROVIDER_LABELS[normalize_map_provider(provider)]
+
+
+def maps_route_url(points: Sequence[TripPoint], provider: object = "google") -> str:
+    if normalize_map_provider(provider) == "yandex":
+        return yandex_maps_route_url(points)
+    return google_maps_route_url(points)
+
+
+def maps_pin_url(point: TripPoint, provider: object = "google") -> str:
+    if normalize_map_provider(provider) == "yandex":
+        return yandex_maps_pin_url(point)
+    return google_maps_pin_url(point)
 
 
 def parse_coordinates(value: object) -> Optional[Tuple[float, float]]:

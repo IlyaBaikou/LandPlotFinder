@@ -17,6 +17,7 @@ const dt = (value) => value ? new Intl.DateTimeFormat('ru-RU', {
 const decisions = { new: 'Не разобрано', liked: 'Приглянулось', studying: 'Изучаем', trip: 'К поездке', rejected: 'Отказ' };
 const sourceNames = { realt: 'Realt.by', kufar: 'Kufar', realt_auction: 'Аукционы Realt', rlt_auction: 'RLT', e_auction: 'e-auction.by' };
 const healthNames = { healthy: 'Работает', degraded: 'Нужна проверка', error: 'Ошибка', empty: 'Пустая выдача', never: 'Ещё не проверен' };
+const mapProviderNames = { google: 'Google Maps', yandex: 'Яндекс Карты' };
 
 async function api(url, options = {}) {
   const headers = { ...(options.headers || {}) };
@@ -155,6 +156,7 @@ function pollJobs() {
 
 async function loadSettings() {
   state.settings = await api('/api/settings'); state.profileId = state.settings.active_profile_id; $('#profileSelect').value = state.profileId;
+  $('#mapProviderHint').textContent = `Использовать: ${mapProviderNames[state.settings.map_provider] || 'Google Maps'}`;
   if (!state.settings.configured) $('#setupModal').classList.remove('hidden'); fillSettings();
 }
 function activeProfile() { return state.profiles.find((profile) => profile.id === state.profileId) || state.settings?.profiles?.find((profile) => profile.id === state.profileId) || state.settings; }
@@ -185,7 +187,9 @@ async function saveSettings(form) {
     await api(`/api/profiles/${encodeURIComponent(state.profileId)}`, { method: 'PUT', body: JSON.stringify(profile) });
     state.settings = await api('/api/settings', { method: 'PUT', body: JSON.stringify({ ...profile,
       activity_check_enabled: data.activity_check_enabled, telegram_enabled: data.telegram_enabled,
-      telegram_bot_token: data.telegram_bot_token, telegram_chat_id: data.telegram_chat_id }) });
+      telegram_bot_token: data.telegram_bot_token, telegram_chat_id: data.telegram_chat_id,
+      map_provider: data.map_provider }) });
+    $('#mapProviderHint').textContent = `Использовать: ${mapProviderNames[state.settings.map_provider] || 'Google Maps'}`;
     await loadProfiles(); fillSettings(); $('#setupModal').classList.add('hidden'); toast('Настройки сохранены'); loadSummary();
   } catch (error) { toast(error.message); }
 }
@@ -222,12 +226,13 @@ async function loadMap() {
   if (!state.map) { state.map = L.map('map').setView([53.95, 27.56], 9); L.tileLayer('https://{s}.tile.openstreetmap.org/{z}/{x}/{y}.png', { maxZoom: 18, attribution: '© OpenStreetMap' }).addTo(state.map); state.mapMarkers = L.layerGroup().addTo(state.map); }
   setTimeout(() => state.map.invalidateSize(), 50);
   try { const data = await api(`/api/map?${profileParams()}`); state.mapMarkers.clearLayers(); const colors = { new: '#718277', liked: '#b8874d', studying: '#9a713f', trip: '#a54f42', rejected: '#999' };
-    data.items.forEach((listing) => L.circleMarker([listing.latitude, listing.longitude], { radius: 7, color: '#fff', weight: 2, fillColor: colors[listing.decision] || colors.new, fillOpacity: 1 }).addTo(state.mapMarkers).bindPopup(`<b>${esc(listing.title)}</b><br>${money(listing.price_usd)} · ${number(listing.area_sotok)} сот.<br><button onclick="window.openListing(${listing.id})">Подробнее</button>`)); }
+    $('#mapProviderHint').textContent = `Использовать: ${data.map_provider_label}`;
+    data.items.forEach((listing) => L.circleMarker([listing.latitude, listing.longitude], { radius: 7, color: '#fff', weight: 2, fillColor: colors[listing.decision] || colors.new, fillOpacity: 1 }).addTo(state.mapMarkers).bindPopup(`<b>${esc(listing.title)}</b><br>${money(listing.price_usd)} · ${number(listing.area_sotok)} сот.<div class="map-popup-actions"><button onclick="window.openListing(${listing.id})">Подробнее</button><a href="${esc(listing.map_url)}" target="_blank" rel="noopener">${esc(data.map_provider_label)} ↗</a></div>`)); }
   catch (error) { toast(error.message); }
 }
 async function buildTrip() {
   try { const data = await api(`/api/trips/plan?${profileParams()}`, { method: 'POST', body: JSON.stringify({ listing_ids: [], max_points_per_route: 4 }) });
-    $('#routeResults').innerHTML = data.routes.length ? data.routes.map((route) => `<article class="route-card"><div><h4>Маршрут ${route.index} · ${route.distance_km} км</h4><p>${route.items.map((item) => esc(item.title)).join(' → ')}</p></div><a class="button primary" href="${esc(route.url)}" target="_blank" rel="noopener">Открыть в Google Maps ↗</a></article>`).join('') : '<div class="empty">Отметьте объекты статусом «К поездке», и сервис соберёт маршрут.</div>'; }
+    $('#routeResults').innerHTML = data.routes.length ? data.routes.map((route) => `<article class="route-card"><div><h4>Маршрут ${route.index} · ${route.distance_km} км</h4><p>${route.items.map((item) => esc(item.title)).join(' → ')}</p></div><a class="button primary" href="${esc(route.url)}" target="_blank" rel="noopener">Открыть: ${esc(data.map_provider_label)} ↗</a></article>`).join('') : '<div class="empty">Отметьте объекты статусом «К поездке», и сервис соберёт маршрут.</div>'; }
   catch (error) { toast(error.message); }
 }
 async function loadBackupInfo() {

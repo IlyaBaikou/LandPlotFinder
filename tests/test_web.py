@@ -6,6 +6,7 @@ from app.config import load_settings
 from app.db import init_db, make_engine, make_session_factory, session_scope
 from app.models import ListingModel
 from app.web import create_app
+from app.web_config import save_web_config
 
 
 def _settings(tmp_path):
@@ -63,6 +64,7 @@ def test_web_setup_and_listing_decision(tmp_path) -> None:
                 "schedule_enabled": False,
                 "schedule_interval_hours": 6,
                 "activity_check_enabled": True,
+                "map_provider": "yandex",
                 "sources": ["realt", "kufar"],
                 "target_price_usd": 20_000,
                 "max_price_usd": 40_000,
@@ -92,8 +94,12 @@ def test_web_setup_and_listing_decision(tmp_path) -> None:
         assert detail["decision"] == "liked"
         assert detail["note"] == "Заехать в субботу"
 
-        points = client.get("/api/map").json()["items"]
+        map_data = client.get("/api/map").json()
+        assert map_data["map_provider"] == "yandex"
+        assert map_data["map_provider_label"] == "Яндекс Карты"
+        points = map_data["items"]
         assert points[0]["decision"] == "liked"
+        assert points[0]["map_url"].startswith("https://yandex.ru/maps/")
 
 
 def test_web_rejects_job_before_setup(tmp_path) -> None:
@@ -105,6 +111,7 @@ def test_web_rejects_job_before_setup(tmp_path) -> None:
 def test_web_profiles_history_routes_health_and_backup(tmp_path) -> None:
     settings = _settings(tmp_path)
     listing_id = _seed_listing(settings)
+    save_web_config(settings.database_url, {"map_provider": "yandex"})
 
     with TestClient(create_app(settings)) as client:
         profiles = client.get("/api/profiles").json()
@@ -126,6 +133,8 @@ def test_web_profiles_history_routes_health_and_backup(tmp_path) -> None:
             json={"listing_ids": [], "max_points_per_route": 4},
         ).json()
         assert route["points"] == 1
+        assert route["map_provider"] == "yandex"
+        assert route["routes"][0]["url"].startswith("https://yandex.ru/maps/")
         assert route["routes"][0]["items"][0]["id"] == listing_id
 
         backup = client.get("/api/backups/download")
