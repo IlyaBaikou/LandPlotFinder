@@ -5,15 +5,13 @@ from dataclasses import dataclass
 from datetime import datetime, timezone
 from typing import Dict, List, Optional, Tuple
 
-from google.oauth2.service_account import Credentials
-from googleapiclient.discovery import build
 from sqlalchemy import case, func, select
 
 from app.config import Settings
 from app.db import init_db, make_engine, make_session_factory, session_scope
 from app.http import PageUnavailableError, PublicPageClient, SourceBlockedError
 from app.integrations.trips import SHEETS_SCOPE
-from app.models import ListingActivityModel, ListingModel
+from app.models import ListingActivityModel, ListingEventModel, ListingModel
 from app.sources.next_data import extract_next_data
 
 LOGGER = logging.getLogger(__name__)
@@ -167,8 +165,19 @@ class ListingActivityChecker:
                             activity.consecutive_unavailable
                             >= self.settings.activity_confirmation_count
                         ):
-                            listing.active = False
-                            archived.append(target.external_id)
+                            if listing.active:
+                                listing.active = False
+                                session.add(
+                                    ListingEventModel(
+                                        listing_id=listing.id,
+                                        event_type="archived",
+                                        payload={
+                                            "reason": error or "Страница объявления недоступна",
+                                            "checks": activity.consecutive_unavailable,
+                                        },
+                                    )
+                                )
+                                archived.append(target.external_id)
             return archived
         finally:
             engine.dispose()
@@ -181,6 +190,9 @@ class GoogleSheetActivitySink:
         sheet_name: str,
         credentials_info: dict,
     ) -> None:
+        from google.oauth2.service_account import Credentials
+        from googleapiclient.discovery import build
+
         credentials = Credentials.from_service_account_info(
             credentials_info,
             scopes=[SHEETS_SCOPE],

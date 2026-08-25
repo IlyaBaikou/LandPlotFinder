@@ -101,6 +101,42 @@ class ListingSnapshotModel(Base):
     listing: Mapped[ListingModel] = relationship(back_populates="snapshots")
 
 
+class ListingEventModel(Base):
+    __tablename__ = "listing_events"
+
+    id: Mapped[int] = mapped_column(Integer, primary_key=True)
+    listing_id: Mapped[int] = mapped_column(
+        ForeignKey("listings.id", ondelete="CASCADE"), nullable=False, index=True
+    )
+    event_type: Mapped[str] = mapped_column(String(32), nullable=False, index=True)
+    occurred_at: Mapped[datetime] = mapped_column(
+        DateTime(timezone=True), nullable=False, default=utcnow
+    )
+    payload: Mapped[Dict[str, Any]] = mapped_column(JSON, nullable=False, default=dict)
+
+
+class ListingProfileModel(Base):
+    __tablename__ = "listing_profiles"
+    __table_args__ = (
+        UniqueConstraint("listing_id", "profile_id", name="uq_listing_profile"),
+    )
+
+    id: Mapped[int] = mapped_column(Integer, primary_key=True)
+    listing_id: Mapped[int] = mapped_column(
+        ForeignKey("listings.id", ondelete="CASCADE"), nullable=False, index=True
+    )
+    profile_id: Mapped[str] = mapped_column(String(64), nullable=False, index=True)
+    status: Mapped[str] = mapped_column(String(32), nullable=False)
+    score: Mapped[int] = mapped_column(Integer, nullable=False, default=0)
+    reasons: Mapped[List[str]] = mapped_column(JSON, nullable=False, default=list)
+    first_seen_at: Mapped[datetime] = mapped_column(
+        DateTime(timezone=True), nullable=False, default=utcnow
+    )
+    last_seen_at: Mapped[datetime] = mapped_column(
+        DateTime(timezone=True), nullable=False, default=utcnow
+    )
+
+
 class ListingActivityModel(Base):
     __tablename__ = "listing_activity"
 
@@ -150,6 +186,32 @@ class ScanRunModel(Base):
     status: Mapped[str] = mapped_column(String(32), nullable=False, default="RUNNING")
     source_stats: Mapped[Dict[str, Any]] = mapped_column(JSON, nullable=False, default=dict)
     errors: Mapped[Dict[str, Any]] = mapped_column(JSON, nullable=False, default=dict)
+
+
+class SourceHealthModel(Base):
+    __tablename__ = "source_health"
+    __table_args__ = (
+        UniqueConstraint("source", "profile_id", name="uq_source_health_profile"),
+    )
+
+    id: Mapped[int] = mapped_column(Integer, primary_key=True)
+    source: Mapped[str] = mapped_column(String(64), nullable=False, index=True)
+    profile_id: Mapped[str] = mapped_column(String(64), nullable=False, index=True)
+    status: Mapped[str] = mapped_column(String(32), nullable=False, default="never")
+    last_attempt_at: Mapped[Optional[datetime]] = mapped_column(DateTime(timezone=True))
+    last_success_at: Mapped[Optional[datetime]] = mapped_column(DateTime(timezone=True))
+    last_failure_at: Mapped[Optional[datetime]] = mapped_column(DateTime(timezone=True))
+    next_retry_at: Mapped[Optional[datetime]] = mapped_column(DateTime(timezone=True))
+    last_duration_ms: Mapped[Optional[int]] = mapped_column(Integer)
+    last_item_count: Mapped[int] = mapped_column(Integer, nullable=False, default=0)
+    baseline_item_count: Mapped[float] = mapped_column(Float, nullable=False, default=0)
+    consecutive_failures: Mapped[int] = mapped_column(Integer, nullable=False, default=0)
+    consecutive_degraded: Mapped[int] = mapped_column(Integer, nullable=False, default=0)
+    last_error: Mapped[Optional[str]] = mapped_column(Text)
+    diagnostics: Mapped[Dict[str, Any]] = mapped_column(JSON, nullable=False, default=dict)
+    updated_at: Mapped[datetime] = mapped_column(
+        DateTime(timezone=True), nullable=False, default=utcnow, onupdate=utcnow
+    )
 
 
 class LocationProfileModel(Base):

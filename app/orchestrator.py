@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import logging
+import time
 from datetime import datetime, timezone
 from typing import Dict, Iterable, List, Optional, Sequence, Set
 
@@ -12,11 +13,11 @@ from app.dedupe import flag_possible_duplicates
 from app.domain import MatchStatus, NormalizedListing, ScanResult
 from app.filters import evaluate_listing
 from app.http import PublicPageClient
-from app.integrations.sheets import GoogleSheetsSink
 from app.integrations.telegram import TelegramNotifier
 from app.locations import attach_location_profiles, load_location_profiles
 from app.models import ListingModel, ScanRunModel
-from app.repository import hydrate_listings, upsert_listing
+from app.repository import hydrate_listings, upsert_listing, upsert_listing_profile
+from app.source_health import quality_metrics, record_health_batch
 from app.sources.base import ListingSource
 from app.sources.beltorgi import BeltorgiAuctionSource
 from app.sources.e_auction import EauctionSource
@@ -37,11 +38,13 @@ class Scanner:
         dry_run: Optional[bool] = None,
         enabled_sources: Optional[Sequence[str]] = None,
         queue: str = "standard",
+        profile_id: str = "default",
     ) -> ScanResult:
         if queue not in {"standard", "preferred"}:
             raise ValueError(f"Unknown scan queue: {queue}")
         effective_dry_run = self.settings.dry_run if dry_run is None else dry_run
         result = ScanResult(started_at=datetime.now(timezone.utc))
+        health_observations = []
 
         with PublicPageClient(
             timeout_seconds=self.settings.http_timeout_seconds,
@@ -52,6 +55,8 @@ class Scanner:
             sources = self._sources(client, enabled_sources, listing_state, queue=queue)
             for source in sources:
                 stat_key = f"preferred:{source.name}" if queue == "preferred" else source.name
+                started = time.monotonic()
+                http_before = client.metrics()
                 try:
                     raw_listings = source.scan()
                     if not effective_dry_run:
@@ -66,17 +71,55 @@ class Scanner:
                         for listing in raw_listings
                     ]
                     result.listings.extend(evaluated)
-                    result.source_stats[stat_key] = _status_counts(evaluated)
+                    stats = _status_counts(evaluated)
+                    quality = quality_metrics(evaluated)
+                    http_metrics = _metric_delta(http_before, client.metrics())
+                    stats.update(
+                        {
+                            "duration_ms": round((time.monotonic() - started) * 1000),
+                            "http": http_metrics,
+                            "quality": quality,
+                        }
+                    )
+                    result.source_stats[stat_key] = stats
+                    health_observations.append(
+                        {
+                            "source": stat_key,
+                            "duration_ms": stats["duration_ms"],
+                            "http": http_metrics,
+                            "quality": quality,
+                        }
+                    )
                 except Exception as exc:
                     LOGGER.exception("Source %s failed in %s queue", source.name, queue)
                     result.errors[stat_key] = str(exc)
-                    result.source_stats[stat_key] = {"error": 1}
+                    http_metrics = _metric_delta(http_before, client.metrics())
+                    duration_ms = round((time.monotonic() - started) * 1000)
+                    result.source_stats[stat_key] = {
+                        "error": 1,
+                        "duration_ms": duration_ms,
+                        "http": http_metrics,
+                    }
+                    health_observations.append(
+                        {
+                            "source": stat_key,
+                            "duration_ms": duration_ms,
+                            "http": http_metrics,
+                            "quality": {"total": 0, "completeness": {}},
+                            "error": str(exc),
+                        }
+                    )
 
         flag_possible_duplicates(result.listings)
 
         if not effective_dry_run:
+            record_health_batch(
+                self.settings.database_url,
+                profile_id,
+                health_observations,
+            )
             self._attach_location_profiles(result.listings)
-            self._persist(result)
+            self._persist(result, profile_id)
             self._sync_external(result)
         else:
             result.new_listings = list(result.listings)
@@ -233,7 +276,7 @@ class Scanner:
         finally:
             engine.dispose()
 
-    def _persist(self, result: ScanResult) -> None:
+    def _persist(self, result: ScanResult, profile_id: str = "default") -> None:
         engine = make_engine(self.settings.database_url)
         init_db(engine)
         factory = make_session_factory(engine)
@@ -248,9 +291,10 @@ class Scanner:
             session.flush()
 
             for listing in result.listings:
-                _, is_new, is_changed, pending_released = upsert_listing(
+                model, is_new, is_changed, pending_released = upsert_listing(
                     session, listing
                 )
+                upsert_listing_profile(session, model, listing, profile_id)
                 is_pending = bool(
                     listing.raw_payload.get("telegram_pending_enrichment")
                 )
@@ -283,6 +327,8 @@ class Scanner:
 
         if self.settings.sheets_enabled:
             try:
+                from app.integrations.sheets import GoogleSheetsSink
+
                 sink = GoogleSheetsSink(
                     spreadsheet_id=self.settings.google_spreadsheet_id or "",
                     sheet_name=self.settings.google_plots_sheet,
@@ -333,6 +379,13 @@ def _unique(values: Iterable[NormalizedListing]) -> List[NormalizedListing]:
     for value in values:
         result[value.external_id] = value
     return list(result.values())
+
+
+def _metric_delta(before: Dict[str, int], after: Dict[str, int]) -> Dict[str, int]:
+    return {
+        key: max(0, int(after.get(key, 0)) - int(before.get(key, 0)))
+        for key in {**before, **after}
+    }
 
 
 def _mark_preferred(

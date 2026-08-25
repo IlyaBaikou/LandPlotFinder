@@ -4,10 +4,10 @@ build-backend = "setuptools.build_meta"
 
 [project]
 name = "land-plot-finder"
-version = "1.0.0"
+version = "1.1.0"
 description = "Standalone land listing monitor with a local web dashboard"
 readme = "README.md"
-requires-python = ">=3.9"
+requires-python = ">=3.10"
 dependencies = [
   "apscheduler>=3.10,<4",
   "beautifulsoup4>=4.12,<5",
@@ -30,6 +30,7 @@ dev = [
 [project.scripts]
 land-plot-finder = "app.cli:main"
 land-plot-finder-web = "app.web:main"
+land-plot-finder-desktop = "app.desktop:main"
 
 [tool.setuptools.packages.find]
 include = ["app*"]
@@ -43,7 +44,7 @@ addopts = "-q"
 
 [tool.ruff]
 line-length = 100
-target-version = "py39"
+target-version = "py310"
 
 [tool.ruff.lint]
 select = ["E", "F", "I"]

@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import logging
+import random
 import time
 from typing import Any, Optional
 
@@ -20,6 +21,7 @@ class PublicPageClient:
         self.retries = retries
         self.delay_seconds = delay_seconds
         self._last_request_at = 0.0
+        self._metrics = {"requests": 0, "retries": 0, "rate_limits": 0}
         self._client = httpx.Client(
             timeout=timeout_seconds,
             follow_redirects=True,
@@ -52,8 +54,10 @@ class PublicPageClient:
         for attempt in range(1, self.retries + 1):
             self._respect_delay(min_delay_seconds)
             try:
+                self._metrics["requests"] += 1
                 response = self._client.get(url)
                 if response.status_code == 429 and retry_rate_limit:
+                    self._metrics["rate_limits"] += 1
                     last_error = SourceBlockedError(
                         f"{url} returned HTTP 429 after {attempt} attempts"
                     )
@@ -71,6 +75,7 @@ class PublicPageClient:
                         attempt + 1,
                         self.retries,
                     )
+                    self._metrics["retries"] += 1
                     time.sleep(wait_seconds)
                     continue
                 if response.status_code in {403, 429}:
@@ -89,7 +94,8 @@ class PublicPageClient:
                 last_error = exc
                 if attempt >= self.retries:
                     break
-                wait_seconds = min(2 ** (attempt - 1), 8)
+                wait_seconds = _temporary_wait(attempt)
+                self._metrics["retries"] += 1
                 LOGGER.warning(
                     "Temporary request error for %s (attempt %s/%s): %s",
                     url,
@@ -127,8 +133,11 @@ class PublicPageClient:
         for attempt in range(1, self.retries + 1):
             self._respect_delay()
             try:
+                self._metrics["requests"] += 1
                 response = self._client.request(method, url, **kwargs)
                 if response.status_code in {403, 429}:
+                    if response.status_code == 429:
+                        self._metrics["rate_limits"] += 1
                     raise SourceBlockedError(
                         f"{url} returned HTTP {response.status_code}; source scan stopped"
                     )
@@ -140,7 +149,8 @@ class PublicPageClient:
                 last_error = exc
                 if attempt >= self.retries:
                     break
-                wait_seconds = min(2 ** (attempt - 1), 8)
+                wait_seconds = _temporary_wait(attempt)
+                self._metrics["retries"] += 1
                 LOGGER.warning(
                     "Temporary request error for %s (attempt %s/%s): %s",
                     url,
@@ -150,6 +160,9 @@ class PublicPageClient:
                 )
                 time.sleep(wait_seconds)
         raise RuntimeError(f"Unable to fetch {url}: {last_error}")
+
+    def metrics(self) -> dict:
+        return dict(self._metrics)
 
     def _respect_delay(self, min_delay_seconds: Optional[float] = None) -> None:
         delay_seconds = max(self.delay_seconds, min_delay_seconds or 0)
@@ -178,3 +191,9 @@ def _rate_limit_wait(
         except ValueError:
             pass
     return min(max(1.0, fallback_seconds) * attempt, 180.0)
+
+
+def _temporary_wait(attempt: int) -> float:
+    """Exponential backoff with light jitter to avoid synchronized retries."""
+    base = min(2 ** (attempt - 1), 16)
+    return base + random.uniform(0, min(1.0, base * 0.2))

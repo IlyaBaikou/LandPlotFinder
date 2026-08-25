@@ -9,6 +9,7 @@
   <link rel="preconnect" href="https://unpkg.com">
   <link rel="stylesheet" href="https://unpkg.com/leaflet@1.9.4/dist/leaflet.css">
   <link rel="stylesheet" href="/static/styles.css">
+  <link rel="stylesheet" href="/static/v11.css">
 </head>
 <body>
   <div class="app-shell">
@@ -22,6 +23,7 @@
         <button class="nav-item active" data-view="dashboard"><span>⌁</span>Обзор</button>
         <button class="nav-item" data-view="listings"><span>▤</span>Объекты</button>
         <button class="nav-item" data-view="map"><span>⌖</span>Карта</button>
+        <button class="nav-item" data-view="health"><span>◉</span>Источники</button>
         <button class="nav-item" data-view="settings"><span>⚙</span>Настройки</button>
       </nav>
 
@@ -39,6 +41,7 @@
           <h1 id="pageTitle">Добрый день</h1>
         </div>
         <div class="top-actions">
+          <select class="profile-picker" id="profileSelect" aria-label="Профиль поиска"></select>
           <div class="job-pill" id="jobPill"><span></span><b>В ожидании</b></div>
           <button class="button primary" id="scanButton">▶ Запустить поиск</button>
         </div>
@@ -90,15 +93,23 @@
       </section>
 
       <section class="view map-view" id="view-map">
-        <div class="map-toolbar"><div><p class="eyebrow">Маршрут исследования</p><h2>Все участки на карте</h2></div><p>Цвет точки показывает ваше решение</p></div>
+        <div class="map-toolbar"><div><p class="eyebrow">Маршрут исследования</p><h2>Все участки на карте</h2></div><button class="button secondary" id="buildTripButton">Построить маршрут «К поездке»</button></div>
         <div id="map" aria-label="Карта участков"></div>
         <div class="map-legend"><span><i class="pin new"></i>Новые</span><span><i class="pin liked"></i>Приглянулись</span><span><i class="pin trip"></i>К поездке</span></div>
+        <div class="route-results" id="routeResults"></div>
+      </section>
+
+      <section class="view" id="view-health">
+        <div class="section-intro"><div><p class="eyebrow">Диагностика</p><h2>Здоровье источников</h2><p>Сервис отличает пустую выдачу от сбоя, замечает резкое исчезновение полей и сам планирует повторные попытки.</p></div><button class="button secondary" id="refreshHealthButton">Обновить</button></div>
+        <div class="health-grid" id="sourceHealthGrid"><div class="empty">Диагностика появится после первого поиска.</div></div>
       </section>
 
       <section class="view" id="view-settings">
         <form class="settings-layout" id="settingsForm">
           <div class="panel settings-main">
-            <div class="panel-head"><div><p class="eyebrow">Критерии поиска</p><h3>Какой участок ищем</h3></div></div>
+            <div class="panel-head profile-head"><div><p class="eyebrow">Профиль поиска</p><h3>Независимая подборка</h3></div><div class="profile-actions"><button class="button ghost" type="button" id="newProfileButton">+ Новый</button><button class="button danger-ghost" type="button" id="deleteProfileButton">Удалить</button></div></div>
+            <div class="profile-fields"><label><span>Название профиля</span><input name="name" maxlength="80" required></label><label class="toggle-row"><span><b>Профиль включён</b><small>Участвует в ручных и автоматических запусках</small></span><input type="checkbox" name="enabled" class="toggle"></label></div>
+            <div class="panel-head criteria-head"><div><p class="eyebrow">Критерии поиска</p><h3>Какой участок ищем</h3></div></div>
             <div class="form-grid">
               <label><span>Желаемая цена, USD</span><input name="target_price_usd" type="number" min="0" required></label>
               <label><span>Максимальная цена, USD</span><input name="max_price_usd" type="number" min="1" required></label>
@@ -130,6 +141,14 @@
               <label class="toggle-row"><span><b>Присылать уведомления</b></span><input type="checkbox" name="telegram_enabled" class="toggle"></label>
               <label><span>Токен бота</span><input name="telegram_bot_token" type="password" autocomplete="off"></label>
               <label><span>ID чата</span><input name="telegram_chat_id" autocomplete="off"></label>
+            </div>
+            <div class="panel">
+              <p class="eyebrow">Ваши данные</p><h3>Резервная копия</h3>
+              <p class="backup-copy" id="backupInfo">Считаем объём базы…</p>
+              <a class="button secondary full" href="/api/backups/download">Скачать копию</a>
+              <input id="restoreFile" type="file" accept=".sqlite,.sqlite3,application/vnd.sqlite3" hidden>
+              <button class="button ghost full" id="restoreButton" type="button">Восстановить из файла</button>
+              <small class="backup-warning">Перед восстановлением текущая база будет заменена содержимым выбранной копии.</small>
             </div>
             <button class="button primary full" type="submit">Сохранить настройки</button>
           </aside>

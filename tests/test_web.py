@@ -100,3 +100,56 @@ def test_web_rejects_job_before_setup(tmp_path) -> None:
     with TestClient(create_app(_settings(tmp_path))) as client:
         response = client.post("/api/jobs/scan")
         assert response.status_code == 409
+
+
+def test_web_profiles_history_routes_health_and_backup(tmp_path) -> None:
+    settings = _settings(tmp_path)
+    listing_id = _seed_listing(settings)
+
+    with TestClient(create_app(settings)) as client:
+        profiles = client.get("/api/profiles").json()
+        assert profiles["active_profile_id"] == "default"
+
+        health = client.get("/api/source-health").json()
+        assert {item["status"] for item in health["items"]} == {"never"}
+
+        history = client.get(f"/api/listings/{listing_id}/history")
+        assert history.status_code == 200
+        assert history.json()["listing_id"] == listing_id
+
+        client.put(
+            f"/api/listings/{listing_id}/decision",
+            json={"state": "trip", "note": "Посмотреть в субботу"},
+        )
+        route = client.post(
+            "/api/trips/plan",
+            json={"listing_ids": [], "max_points_per_route": 4},
+        ).json()
+        assert route["points"] == 1
+        assert route["routes"][0]["items"][0]["id"] == listing_id
+
+        backup = client.get("/api/backups/download")
+        assert backup.status_code == 200
+        assert backup.content.startswith(b"SQLite format 3\x00")
+
+        created = client.post(
+            "/api/profiles",
+            json={
+                "name": "Дачи",
+                "enabled": True,
+                "schedule_enabled": False,
+                "schedule_interval_hours": 12,
+                "sources": ["realt"],
+                "target_price_usd": 15_000,
+                "max_price_usd": 25_000,
+                "min_area_sotok": 6,
+                "max_area_sotok": 12,
+                "max_distance_km": 40,
+                "primary_electricity_kw": 10,
+                "secondary_electricity_kw": 5,
+            },
+        )
+        assert created.status_code == 201
+        second_id = created.json()["id"]
+        assert client.get(f"/api/listings?profile_id={second_id}").json()["total"] == 0
+        assert client.delete(f"/api/profiles/{second_id}").status_code == 200

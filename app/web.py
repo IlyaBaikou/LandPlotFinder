@@ -3,6 +3,7 @@ from __future__ import annotations
 import csv
 import io
 import logging
+import math
 import os
 from contextlib import asynccontextmanager, contextmanager
 from datetime import datetime
@@ -14,20 +15,35 @@ from fastapi import FastAPI, HTTPException, Query, Request, status
 from fastapi.responses import FileResponse, JSONResponse, StreamingResponse
 from fastapi.staticfiles import StaticFiles
 from pydantic import BaseModel, Field
-from sqlalchemy import func, or_, select
+from sqlalchemy import and_, func, or_, select
+from starlette.background import BackgroundTask
 
+from app.backups import (
+    backup_filename,
+    create_backup,
+    database_stats,
+    restore_backup,
+)
 from app.config import Settings, load_settings
 from app.db import init_db, make_engine, make_session_factory, session_scope
+from app.integrations.trips import TripPoint, build_trip_routes, google_maps_route_url
 from app.jobs import JobCoordinator
 from app.models import (
     ListingActivityModel,
     ListingDecisionModel,
+    ListingEventModel,
     ListingModel,
+    ListingProfileModel,
+    ListingSnapshotModel,
     ScanRunModel,
 )
+from app.source_health import health_payloads
 from app.web_config import (
+    delete_search_profile,
+    get_profile,
     load_web_config,
     public_web_config,
+    save_search_profile,
     save_web_config,
 )
 
@@ -59,6 +75,28 @@ class SettingsPayload(BaseModel):
     telegram_chat_id: str = ""
 
 
+class SearchProfilePayload(BaseModel):
+    name: str = Field(default="Новый поиск", min_length=1, max_length=80)
+    enabled: bool = True
+    schedule_enabled: bool = True
+    schedule_interval_hours: int = Field(default=6, ge=1, le=168)
+    sources: List[str] = Field(default_factory=lambda: ["realt", "kufar"])
+    target_price_usd: float = Field(default=20_000, ge=0)
+    max_price_usd: float = Field(default=40_000, gt=0)
+    min_area_sotok: float = Field(default=9, gt=0)
+    max_area_sotok: float = Field(default=15, gt=0)
+    max_distance_km: float = Field(default=30, ge=0)
+    primary_electricity_kw: float = Field(default=20, ge=0)
+    secondary_electricity_kw: float = Field(default=6, ge=0)
+
+
+class TripPlanPayload(BaseModel):
+    listing_ids: List[int] = Field(default_factory=list, max_length=100)
+    start_latitude: float = Field(default=53.9006, ge=-90, le=90)
+    start_longitude: float = Field(default=27.5590, ge=-180, le=180)
+    max_points_per_route: int = Field(default=4, ge=2, le=9)
+
+
 def create_app(settings: Optional[Settings] = None) -> FastAPI:
     base_settings = settings or load_settings()
     _ensure_sqlite_parent(base_settings.database_url)
@@ -76,7 +114,7 @@ def create_app(settings: Optional[Settings] = None) -> FastAPI:
     app = FastAPI(
         title="LandPlotFinder",
         description="Локальная панель поиска и отбора земельных участков",
-        version="1.0.0",
+        version="1.1.0",
         lifespan=lifespan,
     )
     app.state.settings = base_settings
@@ -101,24 +139,110 @@ def create_app(settings: Optional[Settings] = None) -> FastAPI:
         coordinator.configure()
         return public_web_config(saved)
 
+    @app.get("/api/profiles")
+    def profiles() -> Dict[str, Any]:
+        config = load_web_config(base_settings.database_url)
+        return {
+            "active_profile_id": config["active_profile_id"],
+            "items": config["profiles"],
+        }
+
+    @app.post("/api/profiles", status_code=status.HTTP_201_CREATED)
+    def create_profile(payload: SearchProfilePayload) -> Dict[str, Any]:
+        try:
+            profile = save_search_profile(
+                base_settings.database_url,
+                payload.model_dump(),
+            )
+        except ValueError as exc:
+            raise HTTPException(status_code=422, detail=str(exc)) from exc
+        coordinator.configure()
+        return profile
+
+    @app.put("/api/profiles/{profile_id}")
+    def update_profile(profile_id: str, payload: SearchProfilePayload) -> Dict[str, Any]:
+        try:
+            profile = save_search_profile(
+                base_settings.database_url,
+                payload.model_dump(),
+                profile_id,
+            )
+        except ValueError as exc:
+            raise HTTPException(status_code=422, detail=str(exc)) from exc
+        coordinator.configure()
+        return profile
+
+    @app.post("/api/profiles/{profile_id}/activate")
+    def activate_profile(profile_id: str) -> Dict[str, Any]:
+        config = load_web_config(base_settings.database_url)
+        try:
+            get_profile(config, profile_id)
+        except KeyError as exc:
+            raise HTTPException(status_code=404, detail="Профиль не найден") from exc
+        saved = save_web_config(
+            base_settings.database_url,
+            {"active_profile_id": profile_id},
+        )
+        return {"active_profile_id": saved["active_profile_id"]}
+
+    @app.delete("/api/profiles/{profile_id}")
+    def delete_profile(profile_id: str) -> Dict[str, Any]:
+        try:
+            saved = delete_search_profile(base_settings.database_url, profile_id)
+        except KeyError as exc:
+            raise HTTPException(status_code=404, detail="Профиль не найден") from exc
+        except ValueError as exc:
+            raise HTTPException(status_code=409, detail=str(exc)) from exc
+        coordinator.configure()
+        return {
+            "ok": True,
+            "active_profile_id": saved["active_profile_id"],
+        }
+
     @app.get("/api/summary")
-    def summary() -> Dict[str, Any]:
+    def summary(profile_id: Optional[str] = None) -> Dict[str, Any]:
+        config = load_web_config(base_settings.database_url)
+        selected_profile_id = _selected_profile_id(config, profile_id)
         with _database(base_settings) as session:
             active = session.scalar(
-                select(func.count()).select_from(ListingModel).where(ListingModel.active)
+                select(func.count())
+                .select_from(ListingProfileModel)
+                .join(ListingModel, ListingModel.id == ListingProfileModel.listing_id)
+                .where(
+                    ListingProfileModel.profile_id == selected_profile_id,
+                    ListingModel.active,
+                )
             ) or 0
             archived = session.scalar(
-                select(func.count()).select_from(ListingModel).where(~ListingModel.active)
+                select(func.count())
+                .select_from(ListingProfileModel)
+                .join(ListingModel, ListingModel.id == ListingProfileModel.listing_id)
+                .where(
+                    ListingProfileModel.profile_id == selected_profile_id,
+                    ~ListingModel.active,
+                )
             ) or 0
             liked = session.scalar(
                 select(func.count())
                 .select_from(ListingDecisionModel)
-                .where(ListingDecisionModel.state.in_({"liked", "studying", "trip"}))
+                .join(
+                    ListingProfileModel,
+                    ListingProfileModel.listing_id == ListingDecisionModel.listing_id,
+                )
+                .where(
+                    ListingProfileModel.profile_id == selected_profile_id,
+                    ListingDecisionModel.state.in_({"liked", "studying", "trip"}),
+                )
             ) or 0
             high_score = session.scalar(
                 select(func.count())
-                .select_from(ListingModel)
-                .where(ListingModel.active, ListingModel.score >= 80)
+                .select_from(ListingProfileModel)
+                .join(ListingModel, ListingModel.id == ListingProfileModel.listing_id)
+                .where(
+                    ListingProfileModel.profile_id == selected_profile_id,
+                    ListingModel.active,
+                    ListingProfileModel.score >= 80,
+                )
             ) or 0
             latest = session.scalar(
                 select(ScanRunModel).order_by(ScanRunModel.started_at.desc()).limit(1)
@@ -128,7 +252,8 @@ def create_app(settings: Optional[Settings] = None) -> FastAPI:
                 "archived": archived,
                 "selected": liked,
                 "high_score": high_score,
-                "configured": load_web_config(base_settings.database_url)["configured"],
+                "configured": config["configured"],
+                "profile_id": selected_profile_id,
                 "latest_run": _run_json(latest) if latest else None,
                 "job": coordinator.status(),
             }
@@ -142,10 +267,25 @@ def create_app(settings: Optional[Settings] = None) -> FastAPI:
         min_score: int = Query(default=0, ge=0, le=100),
         page: int = Query(default=1, ge=1),
         page_size: int = Query(default=24, ge=1, le=100),
+        profile_id: Optional[str] = None,
     ) -> Dict[str, Any]:
+        config = load_web_config(base_settings.database_url)
+        selected_profile_id = _selected_profile_id(config, profile_id)
         with _database(base_settings) as session:
             statement = (
-                select(ListingModel, ListingDecisionModel, ListingActivityModel)
+                select(
+                    ListingModel,
+                    ListingDecisionModel,
+                    ListingActivityModel,
+                    ListingProfileModel,
+                )
+                .join(
+                    ListingProfileModel,
+                    and_(
+                        ListingProfileModel.listing_id == ListingModel.id,
+                        ListingProfileModel.profile_id == selected_profile_id,
+                    ),
+                )
                 .outerjoin(
                     ListingDecisionModel,
                     ListingDecisionModel.listing_id == ListingModel.id,
@@ -155,7 +295,7 @@ def create_app(settings: Optional[Settings] = None) -> FastAPI:
                     ListingActivityModel.listing_id == ListingModel.id,
                 )
             )
-            conditions = [ListingModel.score >= min_score]
+            conditions = [ListingProfileModel.score >= min_score]
             if active == "active":
                 conditions.append(ListingModel.active.is_(True))
             elif active == "archived":
@@ -188,7 +328,7 @@ def create_app(settings: Optional[Settings] = None) -> FastAPI:
             ) or 0
             rows = session.execute(
                 statement.order_by(
-                    ListingModel.score.desc(),
+                    ListingProfileModel.score.desc(),
                     ListingModel.first_seen_at.desc(),
                 )
                 .offset((page - 1) * page_size)
@@ -203,10 +343,27 @@ def create_app(settings: Optional[Settings] = None) -> FastAPI:
             }
 
     @app.get("/api/listings/{listing_id}")
-    def listing_detail(listing_id: int) -> Dict[str, Any]:
+    def listing_detail(
+        listing_id: int,
+        profile_id: Optional[str] = None,
+    ) -> Dict[str, Any]:
+        config = load_web_config(base_settings.database_url)
+        selected_profile_id = _selected_profile_id(config, profile_id)
         with _database(base_settings) as session:
             row = session.execute(
-                select(ListingModel, ListingDecisionModel, ListingActivityModel)
+                select(
+                    ListingModel,
+                    ListingDecisionModel,
+                    ListingActivityModel,
+                    ListingProfileModel,
+                )
+                .outerjoin(
+                    ListingProfileModel,
+                    and_(
+                        ListingProfileModel.listing_id == ListingModel.id,
+                        ListingProfileModel.profile_id == selected_profile_id,
+                    ),
+                )
                 .outerjoin(
                     ListingDecisionModel,
                     ListingDecisionModel.listing_id == ListingModel.id,
@@ -237,8 +394,22 @@ def create_app(settings: Optional[Settings] = None) -> FastAPI:
             if decision is None:
                 decision = ListingDecisionModel(listing_id=listing_id)
                 session.add(decision)
+            previous_state = decision.state
+            previous_note = decision.note
             decision.state = payload.state
             decision.note = payload.note.strip()
+            if previous_state != decision.state or previous_note != decision.note:
+                session.add(
+                    ListingEventModel(
+                        listing_id=listing_id,
+                        event_type="decision",
+                        payload={
+                            "from": previous_state,
+                            "to": decision.state,
+                            "note_changed": previous_note != decision.note,
+                        },
+                    )
+                )
             session.flush()
             return {
                 "listing_id": listing_id,
@@ -246,15 +417,58 @@ def create_app(settings: Optional[Settings] = None) -> FastAPI:
                 "note": decision.note,
             }
 
+    @app.get("/api/listings/{listing_id}/history")
+    def listing_history(listing_id: int) -> Dict[str, Any]:
+        with _database(base_settings) as session:
+            listing = session.get(ListingModel, listing_id)
+            if listing is None:
+                raise HTTPException(status_code=404, detail="Объявление не найдено")
+            snapshots = list(
+                session.scalars(
+                    select(ListingSnapshotModel)
+                    .where(ListingSnapshotModel.listing_id == listing_id)
+                    .order_by(ListingSnapshotModel.observed_at)
+                )
+            )
+            events = list(
+                session.scalars(
+                    select(ListingEventModel)
+                    .where(ListingEventModel.listing_id == listing_id)
+                    .order_by(ListingEventModel.occurred_at)
+                )
+            )
+            return {
+                "listing_id": listing_id,
+                "first_seen_at": _iso(listing.first_seen_at),
+                "last_seen_at": _iso(listing.last_seen_at),
+                "active": listing.active,
+                "snapshots": [
+                    {
+                        "observed_at": _iso(snapshot.observed_at),
+                        "price_usd": snapshot.price_usd,
+                        "status": snapshot.status,
+                    }
+                    for snapshot in snapshots
+                ],
+                "events": [
+                    {
+                        "occurred_at": _iso(event.occurred_at),
+                        "type": event.event_type,
+                        "payload": event.payload or {},
+                    }
+                    for event in events
+                ],
+            }
+
     @app.post("/api/jobs/{kind}", status_code=status.HTTP_202_ACCEPTED)
-    def start_job(kind: str) -> JSONResponse:
+    def start_job(kind: str, profile_id: Optional[str] = None) -> JSONResponse:
         if kind not in {"scan", "activity"}:
             raise HTTPException(status_code=404, detail="Неизвестная задача")
         config = load_web_config(base_settings.database_url)
         if not config["configured"]:
             raise HTTPException(status_code=409, detail="Сначала завершите настройку")
         started = (
-            coordinator.request_scan()
+            coordinator.request_scan(profile_id=profile_id)
             if kind == "scan"
             else coordinator.request_activity()
         )
@@ -270,10 +484,19 @@ def create_app(settings: Optional[Settings] = None) -> FastAPI:
         return coordinator.status()
 
     @app.get("/api/map")
-    def map_points() -> Dict[str, Any]:
+    def map_points(profile_id: Optional[str] = None) -> Dict[str, Any]:
+        config = load_web_config(base_settings.database_url)
+        selected_profile_id = _selected_profile_id(config, profile_id)
         with _database(base_settings) as session:
             rows = session.execute(
-                select(ListingModel, ListingDecisionModel)
+                select(ListingModel, ListingDecisionModel, ListingProfileModel)
+                .join(
+                    ListingProfileModel,
+                    and_(
+                        ListingProfileModel.listing_id == ListingModel.id,
+                        ListingProfileModel.profile_id == selected_profile_id,
+                    ),
+                )
                 .outerjoin(
                     ListingDecisionModel,
                     ListingDecisionModel.listing_id == ListingModel.id,
@@ -283,7 +506,7 @@ def create_app(settings: Optional[Settings] = None) -> FastAPI:
                     ListingModel.latitude.is_not(None),
                     ListingModel.longitude.is_not(None),
                 )
-                .order_by(ListingModel.score.desc())
+                .order_by(ListingProfileModel.score.desc())
                 .limit(1000)
             ).all()
             return {
@@ -295,13 +518,105 @@ def create_app(settings: Optional[Settings] = None) -> FastAPI:
                         "longitude": listing.longitude,
                         "price_usd": listing.price_usd,
                         "area_sotok": listing.area_sotok,
-                        "score": listing.score,
+                        "score": match.score,
                         "url": listing.canonical_url,
                         "decision": decision.state if decision else "new",
                     }
-                    for listing, decision in rows
+                    for listing, decision, match in rows
                 ]
             }
+
+    @app.get("/api/source-health")
+    def source_health(profile_id: Optional[str] = None) -> Dict[str, Any]:
+        config = load_web_config(base_settings.database_url)
+        selected_profile_id = _selected_profile_id(config, profile_id)
+        profile = get_profile(config, selected_profile_id)
+        saved = {
+            item["source"]: item
+            for item in health_payloads(base_settings.database_url, selected_profile_id)
+        }
+        items = []
+        for source in profile["sources"]:
+            items.append(
+                saved.get(
+                    source,
+                    {
+                        "source": source,
+                        "profile_id": selected_profile_id,
+                        "status": "never",
+                        "last_attempt_at": None,
+                        "last_success_at": None,
+                        "last_error": None,
+                        "last_item_count": 0,
+                        "consecutive_failures": 0,
+                        "diagnostics": {},
+                    },
+                )
+            )
+        return {"profile_id": selected_profile_id, "items": items}
+
+    @app.post("/api/trips/plan")
+    def trip_plan(
+        payload: TripPlanPayload,
+        profile_id: Optional[str] = None,
+    ) -> Dict[str, Any]:
+        config = load_web_config(base_settings.database_url)
+        selected_profile_id = _selected_profile_id(config, profile_id)
+        with _database(base_settings) as session:
+            statement = (
+                select(ListingModel, ListingDecisionModel)
+                .join(
+                    ListingProfileModel,
+                    and_(
+                        ListingProfileModel.listing_id == ListingModel.id,
+                        ListingProfileModel.profile_id == selected_profile_id,
+                    ),
+                )
+                .join(
+                    ListingDecisionModel,
+                    ListingDecisionModel.listing_id == ListingModel.id,
+                )
+                .where(
+                    ListingModel.active.is_(True),
+                    ListingModel.latitude.is_not(None),
+                    ListingModel.longitude.is_not(None),
+                )
+            )
+            if payload.listing_ids:
+                statement = statement.where(ListingModel.id.in_(payload.listing_ids))
+            else:
+                statement = statement.where(ListingDecisionModel.state == "trip")
+            rows = session.execute(
+                statement.order_by(ListingProfileModel.score.desc())
+            ).all()
+            points = [_trip_point(listing, decision) for listing, decision in rows]
+        routes = build_trip_routes(
+            points,
+            max_points=payload.max_points_per_route,
+            start=(payload.start_latitude, payload.start_longitude),
+        )
+        return {
+            "points": len(points),
+            "routes": [
+                {
+                    "index": index,
+                    "url": google_maps_route_url(route),
+                    "distance_km": round(_route_distance(route, payload), 1),
+                    "items": [
+                        {
+                            "id": int(point.external_id),
+                            "title": point.place,
+                            "latitude": point.latitude,
+                            "longitude": point.longitude,
+                            "price": point.price,
+                            "url": point.listing_url,
+                        }
+                        for point in route
+                    ],
+                }
+                for index, route in enumerate(routes, start=1)
+            ],
+        }
 
     @app.get("/api/export.csv")
     def export_csv() -> StreamingResponse:
@@ -352,6 +667,49 @@ def create_app(settings: Optional[Settings] = None) -> FastAPI:
             headers={"Content-Disposition": "attachment; filename=land-plots.csv"},
         )
 
+    @app.get("/api/backups/info")
+    def backup_info() -> Dict[str, int]:
+        try:
+            return database_stats(base_settings.database_url)
+        except ValueError as exc:
+            raise HTTPException(status_code=409, detail=str(exc)) from exc
+
+    @app.get("/api/backups/download")
+    def download_backup() -> FileResponse:
+        if coordinator.status()["running"]:
+            raise HTTPException(
+                status_code=409,
+                detail="Дождитесь завершения текущей задачи",
+            )
+        try:
+            path = create_backup(base_settings.database_url)
+        except ValueError as exc:
+            raise HTTPException(status_code=409, detail=str(exc)) from exc
+        return FileResponse(
+            path,
+            filename=backup_filename(),
+            media_type="application/vnd.sqlite3",
+            background=BackgroundTask(path.unlink, missing_ok=True),
+        )
+
+    @app.post("/api/backups/restore")
+    async def upload_backup(request: Request) -> Dict[str, Any]:
+        if coordinator.status()["running"]:
+            raise HTTPException(
+                status_code=409,
+                detail="Дождитесь завершения текущей задачи",
+            )
+        content = await request.body()
+        try:
+            restored = restore_backup(base_settings.database_url, content)
+        except ValueError as exc:
+            raise HTTPException(status_code=422, detail=str(exc)) from exc
+        engine = make_engine(base_settings.database_url)
+        init_db(engine)
+        engine.dispose()
+        coordinator.configure()
+        return {"ok": True, **restored}
+
     @app.get("/")
     @app.get("/{path:path}")
     def index(request: Request, path: str = "") -> FileResponse:
@@ -378,6 +736,7 @@ def _listing_json(
     listing: ListingModel,
     decision: Optional[ListingDecisionModel],
     activity: Optional[ListingActivityModel],
+    profile: Optional[ListingProfileModel],
     detailed: bool = False,
 ) -> Dict[str, Any]:
     value: Dict[str, Any] = {
@@ -393,8 +752,9 @@ def _listing_json(
         "distance_mkad_km": listing.distance_mkad_km,
         "latitude": listing.latitude,
         "longitude": listing.longitude,
-        "score": listing.score,
-        "match_status": listing.status,
+        "score": profile.score if profile else listing.score,
+        "match_status": profile.status if profile else listing.status,
+        "profile_id": profile.profile_id if profile else None,
         "decision": decision.state if decision else "new",
         "note": decision.note if decision else "",
         "active": listing.active,
@@ -423,7 +783,7 @@ def _listing_json(
                 "road": listing.road_raw,
                 "nature": listing.nature_raw,
                 "ownership": listing.ownership_raw,
-                "reasons": listing.reasons or [],
+                "reasons": profile.reasons if profile else listing.reasons or [],
                 "evidence": listing.evidence or {},
             }
         )
@@ -442,6 +802,63 @@ def _run_json(run: ScanRunModel) -> Dict[str, Any]:
 
 def _iso(value: Optional[datetime]) -> Optional[str]:
     return value.isoformat() if value else None
+
+
+def _selected_profile_id(config: Dict[str, Any], profile_id: Optional[str]) -> str:
+    selected = str(profile_id or config["active_profile_id"])
+    try:
+        get_profile(config, selected)
+    except KeyError as exc:
+        raise HTTPException(status_code=404, detail="Профиль поиска не найден") from exc
+    return selected
+
+
+def _trip_point(
+    listing: ListingModel,
+    decision: ListingDecisionModel,
+) -> TripPoint:
+    return TripPoint(
+        external_id=str(listing.id),
+        status=decision.state,
+        source=listing.source,
+        listing_url=listing.canonical_url,
+        district=listing.district or "",
+        place=listing.title,
+        price=f"${listing.price_usd:,.0f}" if listing.price_usd is not None else "",
+        area=f"{listing.area_sotok:g}" if listing.area_sotok is not None else "",
+        distance=(
+            f"{listing.distance_mkad_km:g}"
+            if listing.distance_mkad_km is not None
+            else ""
+        ),
+        latitude=float(listing.latitude),
+        longitude=float(listing.longitude),
+        rating=str(listing.score),
+        location_score="",
+    )
+
+
+def _route_distance(route: List[TripPoint], payload: TripPlanPayload) -> float:
+    current = (payload.start_latitude, payload.start_longitude)
+    total = 0.0
+    for point in route:
+        total += _haversine(current[0], current[1], point.latitude, point.longitude)
+        current = (point.latitude, point.longitude)
+    return total
+
+
+def _haversine(lat_a: float, lon_a: float, lat_b: float, lon_b: float) -> float:
+    latitude_a = math.radians(lat_a)
+    latitude_b = math.radians(lat_b)
+    delta_latitude = latitude_b - latitude_a
+    delta_longitude = math.radians(lon_b - lon_a)
+    value = (
+        math.sin(delta_latitude / 2) ** 2
+        + math.cos(latitude_a)
+        * math.cos(latitude_b)
+        * math.sin(delta_longitude / 2) ** 2
+    )
+    return 6371.0088 * 2 * math.asin(math.sqrt(value))
 
 
 def _ensure_sqlite_parent(database_url: str) -> None:

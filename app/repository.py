@@ -8,7 +8,12 @@ from sqlalchemy import select
 from sqlalchemy.orm import Session
 
 from app.domain import NormalizedListing
-from app.models import ListingModel, ListingSnapshotModel
+from app.models import (
+    ListingEventModel,
+    ListingModel,
+    ListingProfileModel,
+    ListingSnapshotModel,
+)
 from app.normalization import content_hash
 
 MUTABLE_FIELDS = [
@@ -206,9 +211,18 @@ def upsert_listing(
         )
         session.add(model)
         session.flush()
+        session.add(
+            ListingEventModel(
+                listing_id=model.id,
+                event_type="created",
+                payload={"price_usd": listing.price_usd, "status": listing.status.value},
+            )
+        )
         is_changed = True
     else:
+        was_inactive = not model.active
         content_changed = model.content_hash != digest
+        history_changes = _history_changes(model, listing) if content_changed else {}
         notification_baseline = _notification_baseline(model)
         notification_changes = _notification_changes(
             notification_baseline,
@@ -230,6 +244,21 @@ def upsert_listing(
                     status=listing.status.value,
                     content_hash=digest,
                     payload=listing.serializable(),
+                )
+            )
+            session.add(
+                ListingEventModel(
+                    listing_id=model.id,
+                    event_type="updated",
+                    payload={"changes": history_changes},
+                )
+            )
+        if was_inactive:
+            session.add(
+                ListingEventModel(
+                    listing_id=model.id,
+                    event_type="reactivated",
+                    payload={"reason": "Объявление снова найдено в источнике"},
                 )
             )
 
@@ -254,6 +283,69 @@ def upsert_listing(
             )
         )
     return model, is_new, is_changed, pending_released
+
+
+def upsert_listing_profile(
+    session: Session,
+    listing_model: ListingModel,
+    listing: NormalizedListing,
+    profile_id: str,
+) -> ListingProfileModel:
+    now = datetime.now(timezone.utc)
+    match = session.scalar(
+        select(ListingProfileModel).where(
+            ListingProfileModel.listing_id == listing_model.id,
+            ListingProfileModel.profile_id == profile_id,
+        )
+    )
+    if match is None:
+        match = ListingProfileModel(
+            listing_id=listing_model.id,
+            profile_id=profile_id,
+            status=listing.status.value,
+            score=listing.score,
+            reasons=list(listing.reasons),
+            first_seen_at=now,
+            last_seen_at=now,
+        )
+        session.add(match)
+    else:
+        match.status = listing.status.value
+        match.score = listing.score
+        match.reasons = list(listing.reasons)
+        match.last_seen_at = now
+    return match
+
+
+def _history_changes(model: ListingModel, listing: NormalizedListing) -> dict:
+    changes = {}
+    tracked = {
+        "price_usd": "Цена",
+        "area_sotok": "Площадь",
+        "distance_mkad_km": "Расстояние",
+        "canonical_url": "Ссылка",
+        "title": "Заголовок",
+        "electricity_kw": "Электричество",
+        "gas_raw": "Газ",
+    }
+    for field, label in tracked.items():
+        previous = getattr(model, field)
+        current = getattr(listing, field)
+        if previous != current:
+            changes[field] = {"label": label, "from": previous, "to": current}
+    if model.description != listing.description:
+        changes["description"] = {
+            "label": "Описание",
+            "from_length": len(model.description or ""),
+            "to_length": len(listing.description or ""),
+        }
+    if model.status != listing.status.value:
+        changes["status"] = {
+            "label": "Соответствие фильтру",
+            "from": model.status,
+            "to": listing.status.value,
+        }
+    return changes
 
 
 def _find_republication(

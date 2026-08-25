@@ -1,0 +1,84 @@
+name: Desktop installers
+
+on:
+  workflow_dispatch:
+  push:
+    branches:
+      - main
+    tags:
+      - "v*"
+
+permissions:
+  contents: write
+
+jobs:
+  build:
+    name: Build ${{ matrix.name }}
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          - os: macos-14
+            name: macOS
+            artifact: landplotfinder-macos
+          - os: windows-latest
+            name: Windows
+            artifact: landplotfinder-windows
+    runs-on: ${{ matrix.os }}
+    steps:
+      - uses: actions/checkout@v7
+      - uses: actions/setup-python@v7
+        with:
+          python-version: "3.12"
+          cache: pip
+      - name: Install build dependencies
+        run: python -m pip install . "pyinstaller>=6.10,<7" "pillow>=10,<13"
+      - name: Build application icon
+        run: python packaging/build_icon.py
+      - name: Build desktop application
+        run: pyinstaller --noconfirm --clean packaging/landplotfinder.spec
+
+      - name: Package macOS DMG
+        if: runner.os == 'macOS'
+        shell: bash
+        run: |
+          version="$(python -c 'import app; print(app.__version__)')"
+          mkdir -p build/dmg release
+          cp -R dist/LandPlotFinder.app build/dmg/
+          ln -s /Applications build/dmg/Applications
+          hdiutil create -volname LandPlotFinder -srcfolder build/dmg -ov -format UDZO "release/LandPlotFinder-macOS-${version}.dmg"
+
+      - name: Package Windows installer
+        if: runner.os == 'Windows'
+        shell: pwsh
+        run: |
+          $version = python -c "import app; print(app.__version__)"
+          New-Item -ItemType Directory -Force -Path release | Out-Null
+          & "C:\Program Files (x86)\Inno Setup 6\ISCC.exe" "/DMyAppVersion=$version" packaging\windows-installer.iss
+
+      - uses: actions/upload-artifact@v7
+        with:
+          name: ${{ matrix.artifact }}
+          path: release/*
+          if-no-files-found: error
+
+  release:
+    name: Publish release assets
+    if: startsWith(github.ref, 'refs/tags/v')
+    needs: build
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/download-artifact@v8
+        with:
+          pattern: landplotfinder-*
+          path: release
+          merge-multiple: true
+      - name: Create GitHub release
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          if gh release view "${GITHUB_REF_NAME}" --repo "${GITHUB_REPOSITORY}" >/dev/null 2>&1; then
+            gh release upload "${GITHUB_REF_NAME}" release/* --repo "${GITHUB_REPOSITORY}" --clobber
+          else
+            gh release create "${GITHUB_REF_NAME}" release/* --repo "${GITHUB_REPOSITORY}" --title "LandPlotFinder ${GITHUB_REF_NAME}" --generate-notes
+          fi

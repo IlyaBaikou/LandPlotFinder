@@ -6,9 +6,6 @@ from dataclasses import dataclass
 from typing import Dict, Iterable, List, Optional, Sequence, Tuple
 from urllib.parse import urlencode
 
-from google.oauth2.service_account import Credentials
-from googleapiclient.discovery import build
-
 SHEETS_SCOPE = "https://www.googleapis.com/auth/spreadsheets"
 TRIP_STATUSES = {
     "изучаем",
@@ -43,6 +40,9 @@ class TripPoint:
 
 class GoogleTripsSink:
     def __init__(self, spreadsheet_id: str, credentials_info: dict) -> None:
+        from google.oauth2.service_account import Credentials
+        from googleapiclient.discovery import build
+
         credentials = Credentials.from_service_account_info(
             credentials_info,
             scopes=[SHEETS_SCOPE],
@@ -326,10 +326,11 @@ class GoogleTripsSink:
 def build_trip_routes(
     points: Iterable[TripPoint],
     max_points: int = 4,
+    start: Tuple[float, float] = MINSK_CENTER,
 ) -> List[List[TripPoint]]:
     remaining = list(points)
     ordered: List[TripPoint] = []
-    current = MINSK_CENTER
+    current = start
     while remaining:
         next_point = min(
             remaining,
