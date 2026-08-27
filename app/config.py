@@ -85,6 +85,7 @@ class Settings:
     widget_sms_webhook_token: Optional[str] = None
     widget_lead_webhook_url: Optional[str] = None
     widget_lead_webhook_token: Optional[str] = None
+    web_scheduler_enabled: bool = True
     admin_username: str = "admin"
     admin_password: Optional[str] = None
 
@@ -304,6 +305,9 @@ def load_settings(env_file: Optional[str] = None) -> Settings:
         widget_sms_webhook_token=os.getenv("WIDGET_SMS_WEBHOOK_TOKEN") or None,
         widget_lead_webhook_url=os.getenv("WIDGET_LEAD_WEBHOOK_URL") or None,
         widget_lead_webhook_token=os.getenv("WIDGET_LEAD_WEBHOOK_TOKEN") or None,
+        web_scheduler_enabled=_as_bool(
+            os.getenv("WEB_SCHEDULER_ENABLED", "true")
+        ),
         admin_username=os.getenv("ADMIN_USERNAME", "admin").strip() or "admin",
         admin_password=os.getenv("ADMIN_PASSWORD") or None,
     )

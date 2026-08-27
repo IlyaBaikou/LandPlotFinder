@@ -78,7 +78,13 @@ WIDGET_PROFILE_ID=default
 WIDGET_ALLOWED_ORIGINS=https://project.tilda.ws,https://ваш-домен.by
 WIDGET_PHONE_AUTH_MODE=demo
 WIDGET_AUTH_SECRET=случайная-строка-не-короче-32-символов
+WEB_SCHEDULER_ENABLED=false
 ```
+
+Если отдельная Railway-джоба уже наполняет ту же PostgreSQL-базу, оставьте
+`WEB_SCHEDULER_ENABLED=false`: веб-сервис будет показывать общий каталог, но не
+запустит второй параллельный обход. Для единственного совмещённого сервиса
+используйте `true`.
 
 Не меняйте `WIDGET_AUTH_SECRET` без необходимости: из него формируются
 стабильные публичные коды `LP-…`. После смены секрета коды тех же объектов

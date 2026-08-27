@@ -33,6 +33,9 @@ class JobCoordinator:
         }
 
     def start(self) -> None:
+        if not self.base_settings.web_scheduler_enabled:
+            LOGGER.info("Embedded web scheduler is disabled")
+            return
         if not self.scheduler.running:
             self.scheduler.start()
         self.configure()
@@ -44,6 +47,8 @@ class JobCoordinator:
 
     def configure(self) -> None:
         self.scheduler.remove_all_jobs()
+        if not self.base_settings.web_scheduler_enabled:
+            return
         config = load_web_config(self.base_settings.database_url)
         if not config["configured"]:
             return
