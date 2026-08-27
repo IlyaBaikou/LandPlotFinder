@@ -2,6 +2,7 @@ const state = {
   view: 'dashboard', page: 1, settings: null, profiles: [], profileId: 'default',
   map: null, mapMarkers: null, detail: null, widgetAdmin: null,
 };
+let viewerMode = false;
 const $ = (selector) => document.querySelector(selector);
 const $$ = (selector) => [...document.querySelectorAll(selector)];
 const esc = (value) => String(value ?? '').replace(/[&<>'"]/g, (char) => ({
@@ -69,8 +70,9 @@ async function loadProfiles() {
   $('#profileSelect').value = state.profileId;
 }
 async function switchProfile(profileId) {
-  await api(`/api/profiles/${encodeURIComponent(profileId)}/activate`, { method: 'POST' });
-  state.profileId = profileId; state.page = 1; await loadSettings();
+  if (!viewerMode) await api(`/api/profiles/${encodeURIComponent(profileId)}/activate`, { method: 'POST' });
+  state.profileId = profileId; state.page = 1;
+  if (!viewerMode) await loadSettings(); else { $('#profileSelect').value = profileId; fillSettings(); }
   await Promise.all([loadSummary(), loadDashboard()]);
   if (state.view === 'listings') loadListings();
   if (state.view === 'map') loadMap();
@@ -81,7 +83,7 @@ async function loadSummary() {
     const data = await api(`/api/summary?${profileParams()}`);
     $('#statActive').textContent = number(data.active); $('#statStrong').textContent = number(data.high_score);
     $('#statSelected').textContent = number(data.selected); $('#statArchived').textContent = number(data.archived);
-    renderJob(data.job, data.latest_run); if (!data.configured) $('#setupModal').classList.remove('hidden');
+    renderJob(data.job, data.latest_run); if (!viewerMode && !data.configured) $('#setupModal').classList.remove('hidden');
   } catch { $('#serviceDot').style.background = '#a54f42'; $('#serviceText').textContent = 'Нет соединения'; }
 }
 function renderJob(job, latest) {
@@ -135,7 +137,9 @@ async function openDetail(id) {
       ['Право на землю', listing.ownership || '—'], ['Интернет', listing.internet || '—'], ['Дорога', listing.road || '—'],
     ];
     const factsHtml = facts.map(([label, value]) => `<div><small>${esc(label)}</small><b>${esc(value)}</b></div>`).join('');
-    $('#drawerContent').innerHTML = `<div class="detail-score">${listing.score}</div><p class="eyebrow">${esc(sourceNames[listing.source] || listing.source)} · ${listing.active ? 'актуально' : 'архив'}</p><h2 class="detail-title">${esc(displayTitle(listing))}</h2><p>${esc(displayPlace(listing))}</p><div class="detail-grid">${factsHtml}</div><h3>Ваше решение</h3><div class="decision-row">${Object.entries(decisions).map(([key, value]) => `<button class="${listing.decision === key ? 'active' : ''}" data-detail-decision="${key}">${value}</button>`).join('')}</div><textarea class="detail-note" id="detailNote" placeholder="Заметки об участке">${esc(presentationMode ? '' : listing.note)}</textarea><button class="button secondary full" id="saveDecision">Сохранить решение</button><a class="button primary full" href="${esc(listing.url)}" target="_blank" rel="noopener">Открыть исходную карточку ↗</a>${listing.description ? `<h3>Описание</h3><div class="detail-description">${esc(presentationMode ? 'Описание скрыто в презентационном режиме.' : listing.description)}</div>` : ''}${historyBlock(history)}`;
+    const decisionControls = viewerMode ? '' : `<h3>Ваше решение</h3><div class="decision-row">${Object.entries(decisions).map(([key, value]) => `<button class="${listing.decision === key ? 'active' : ''}" data-detail-decision="${key}">${value}</button>`).join('')}</div><textarea class="detail-note" id="detailNote" placeholder="Заметки об участке">${esc(presentationMode ? '' : listing.note)}</textarea><button class="button secondary full" id="saveDecision">Сохранить решение</button>`;
+    const sourceLink = listing.url && !viewerMode ? `<a class="button primary full" href="${esc(listing.url)}" target="_blank" rel="noopener">Открыть исходную карточку ↗</a>` : '';
+    $('#drawerContent').innerHTML = `<div class="detail-score">${listing.score}</div><p class="eyebrow">${esc(sourceNames[listing.source] || listing.source)} · ${listing.active ? 'актуально' : 'архив'}</p><h2 class="detail-title">${esc(displayTitle(listing))}</h2><p>${esc(displayPlace(listing))}</p><div class="detail-grid">${factsHtml}</div>${decisionControls}${sourceLink}${listing.description ? `<h3>Описание</h3><div class="detail-description">${esc(presentationMode ? 'Описание и контакты скрыты в демонстрационном режиме.' : listing.description)}</div>` : ''}${historyBlock(history)}`;
     const drawer = $('#detailDrawer');
     drawer.scrollTop = 0; drawer.classList.add('open'); $('#drawerShade').classList.add('open'); drawer.setAttribute('aria-hidden', 'false');
     document.body.classList.add('drawer-open');
@@ -180,7 +184,7 @@ function pollJobs() {
 async function loadSettings() {
   state.settings = await api('/api/settings'); state.profileId = state.settings.active_profile_id; $('#profileSelect').value = state.profileId;
   $('#mapProviderHint').textContent = `Использовать: ${mapProviderNames[state.settings.map_provider] || 'Google Maps'}`;
-  if (!state.settings.configured) $('#setupModal').classList.remove('hidden'); fillSettings();
+  if (!viewerMode && !state.settings.configured) $('#setupModal').classList.remove('hidden'); fillSettings();
 }
 function activeProfile() { return state.profiles.find((profile) => profile.id === state.profileId) || state.settings?.profiles?.find((profile) => profile.id === state.profileId) || state.settings; }
 function fillSettings() {
@@ -265,7 +269,8 @@ function renderWidgetRequests() {
     : '<div class="empty">Запросов по конкретным объявлениям пока нет.</div>';
 }
 function widgetRequestCard(item) {
-  return `<article class="widget-request"><div class="widget-request-head"><div><span class="widget-ref">${esc(item.reference)}</span><h4>${esc(displayTitle(item))}</h4></div><time>${esc(dt(item.created_at))}</time></div><div class="widget-client"><a href="${presentationMode ? '#' : `tel:${esc(item.phone)}`}">${esc(displayPhone(item.phone))}</a><span>подтверждённый номер</span></div><div class="widget-criteria">${widgetCriteria(item.search_params)}</div><div class="widget-request-actions"><button class="button secondary" data-open="${item.listing_id}">Карточка в базе</button><a class="button primary" href="${esc(item.url)}" target="_blank" rel="noopener">Исходная карточка ↗</a></div></article>`;
+  const sourceLink = item.url && !viewerMode ? `<a class="button primary" href="${esc(item.url)}" target="_blank" rel="noopener">Исходная карточка ↗</a>` : '';
+  return `<article class="widget-request"><div class="widget-request-head"><div><span class="widget-ref">${esc(item.reference)}</span><h4>${esc(displayTitle(item))}</h4></div><time>${esc(dt(item.created_at))}</time></div><div class="widget-client"><a href="${presentationMode ? '#' : `tel:${esc(item.phone)}`}">${esc(displayPhone(item.phone))}</a><span>подтверждённый номер</span></div><div class="widget-criteria">${widgetCriteria(item.search_params)}</div><div class="widget-request-actions"><button class="button secondary" data-open="${item.listing_id}">Карточка в базе</button>${sourceLink}</div></article>`;
 }
 function widgetCriteria(params = {}) {
   const values = [];
@@ -297,6 +302,7 @@ async function buildTrip() {
   catch (error) { toast(error.message); }
 }
 async function loadBackupInfo() {
+  if (viewerMode) return;
   try { const data = await api('/api/backups/info'); $('#backupInfo').textContent = `${number(data.listings, '0')} объявлений, ${number(data.snapshots, '0')} снимков истории · ${number(data.size_bytes / 1024 / 1024, '0')} МБ`; }
   catch (error) { $('#backupInfo').textContent = error.message; }
 }
@@ -315,6 +321,18 @@ function applyPresentationMode() {
     const title = checkbox?.closest('.check-card')?.querySelector('b');
     if (title) title.textContent = label;
   });
+}
+
+function applyViewerMode() {
+  if (!viewerMode) return;
+  document.body.classList.add('viewer-mode'); $('#viewerBadge').hidden = false;
+  $('#serviceText').textContent = 'Демонстрационный доступ';
+  $('#setupModal').classList.add('hidden');
+  $$('#settingsForm input, #settingsForm select, #settingsForm button').forEach((element) => { element.disabled = true; });
+}
+
+async function logout() {
+  try { await api('/api/auth/logout', { method: 'POST' }); } finally { location.replace('/login'); }
 }
 
 window.openListing = openDetail;
@@ -337,10 +355,14 @@ document.addEventListener('keydown', (event) => { if (event.key === 'Escape' && 
 $('#settingsForm').onsubmit = (event) => { event.preventDefault(); saveSettings(event.currentTarget); };
 $('#setupForm').onsubmit = (event) => { event.preventDefault(); saveSetup(event.currentTarget); };
 $('#restoreButton').onclick = () => $('#restoreFile').click(); $('#restoreFile').onchange = (event) => restoreSelectedBackup(event.target.files[0]);
+$('#logoutButton').onclick = logout;
 ['searchInput', 'decisionFilter', 'sourceFilter', 'activeFilter', 'scoreInput'].forEach((id) => { $(`#${id}`).addEventListener(id === 'searchInput' ? 'input' : 'change', () => { state.page = 1; if (id === 'scoreInput') $('#scoreValue').textContent = $('#scoreInput').value; loadListings(); }); });
 
 (async () => {
+  const auth = await api('/api/auth/me'); viewerMode = auth.role === 'viewer';
+  if (viewerMode && !presentationMode) { const target = new URL(location.href); target.searchParams.set('presentation', '1'); location.replace(target.href); return; }
   applyPresentationMode();
+  applyViewerMode();
   const hash = location.hash.slice(1); if (['dashboard', 'listings', 'map', 'widget', 'health', 'settings'].includes(hash)) setView(hash);
   await loadProfiles(); await loadSettings(); await Promise.all([loadSummary(), loadDashboard()]);
   const job = await api('/api/jobs'); if (job.running) pollJobs();

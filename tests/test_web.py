@@ -4,7 +4,14 @@ from fastapi.testclient import TestClient
 
 from app.config import load_settings
 from app.db import init_db, make_engine, make_session_factory, session_scope
-from app.models import ListingModel, LocationProfileModel
+from app.models import (
+    ListingEventModel,
+    ListingModel,
+    LocationProfileModel,
+    WidgetInterestModel,
+    WidgetLeadModel,
+    utcnow,
+)
 from app.web import create_app
 from app.web_config import save_web_config
 
@@ -424,3 +431,131 @@ def test_admin_password_does_not_block_public_widget(tmp_path) -> None:
         assert service_worker.headers["cache-control"] == "no-store, max-age=0"
         assert client.get("/health").status_code == 200
         assert client.get("/", auth=("admin", "very-secret")).status_code == 200
+
+
+def test_viewer_role_is_read_only_and_masks_sensitive_data(tmp_path) -> None:
+    settings = replace(
+        _settings(tmp_path),
+        admin_password="admin-secret",
+        viewer_username="demo",
+        viewer_password="viewer-secret",
+    )
+    listing_id = _seed_listing(settings)
+    save_web_config(
+        settings.database_url,
+        {
+            "configured": True,
+            "telegram_enabled": True,
+            "telegram_bot_token": "telegram-secret",
+            "telegram_chat_id": "-100123456789",
+        },
+    )
+    engine = make_engine(settings.database_url)
+    factory = make_session_factory(engine)
+    with session_scope(factory) as session:
+        lead = WidgetLeadModel(
+            phone="+375291234567",
+            verified_at=utcnow(),
+            source_page="https://customer.example/plots?utm_source=private",
+            utm={"utm_source": "private"},
+        )
+        session.add(lead)
+        session.flush()
+        session.add(
+            WidgetInterestModel(
+                lead_id=lead.id,
+                listing_id=listing_id,
+                listing_title="Секретный адрес объекта",
+                listing_url="https://re.kufar.by/vi/42",
+                search_params={
+                    "max_price_usd": 40_000,
+                    "customer_comment": "Перезвонить вечером",
+                },
+                source_page="https://customer.example/plots",
+            )
+        )
+        session.add(
+            ListingEventModel(
+                listing_id=listing_id,
+                event_type="updated",
+                payload={
+                    "changes": {
+                        "canonical_url": {
+                            "label": "Ссылка",
+                            "before": "https://old.example/private",
+                            "after": "https://new.example/private",
+                        }
+                    }
+                },
+            )
+        )
+    engine.dispose()
+
+    with TestClient(create_app(settings)) as client:
+        login = client.post(
+            "/api/auth/login",
+            json={"username": "demo", "password": "viewer-secret"},
+        )
+        assert login.status_code == 200
+        assert login.json() == {"ok": True, "role": "viewer", "read_only": True}
+        assert client.get("/api/auth/me").json() == {
+            "role": "viewer",
+            "read_only": True,
+        }
+
+        web_settings = client.get("/api/settings").json()
+        assert web_settings["telegram_enabled"] is False
+        assert web_settings["telegram_bot_token"] == ""
+        assert web_settings["telegram_chat_id"] == ""
+
+        catalog = client.get("/api/listings").json()
+        item = catalog["items"][0]
+        assert item["title"].startswith("Объект LP-")
+        assert item["url"] is None
+        assert item["external_id"].startswith("LP-")
+        assert item["latitude"] == 53.95
+        assert item["longitude"] == 27.56
+        assert item["locality"] == "Выбранное направление"
+
+        detail = client.get(f"/api/listings/{listing_id}").json()
+        assert detail["description"].startswith("Описание и контакты скрыты")
+        assert detail["evidence"] == {}
+        assert detail["note"] == ""
+
+        history = client.get(f"/api/listings/{listing_id}/history").json()
+        assert history["events"][0]["payload"] == {
+            "changes": {"canonical_url": {"label": "Ссылка"}}
+        }
+        assert "private" not in str(history)
+
+        leads = client.get("/api/widget/leads").json()
+        assert leads["items"][0]["phone"] == "+375 •• •••-••-••"
+        assert leads["items"][0]["source_page"] == ""
+        interest = leads["items"][0]["interests"][0]
+        assert interest["url"] is None
+        assert "customer_comment" not in interest["search_params"]
+
+        for method, path, payload in (
+            ("put", "/api/settings", {}),
+            ("post", "/api/jobs/scan", None),
+            (
+                "put",
+                f"/api/listings/{listing_id}/decision",
+                {"state": "liked", "note": "test"},
+            ),
+            ("post", "/api/trips/plan", {"listing_ids": [listing_id]}),
+            ("post", "/api/profiles/default/activate", None),
+        ):
+            response = getattr(client, method)(path, json=payload)
+            assert response.status_code == 403
+
+        assert client.get("/api/export.csv").status_code == 403
+        assert client.get("/api/backups/info").status_code == 403
+        assert client.get("/api/backups/download").status_code == 403
+
+        client.post("/api/auth/logout")
+        basic = client.get("/api/auth/me", auth=("demo", "viewer-secret"))
+        assert basic.json()["role"] == "viewer"
+
+        admin = client.get(f"/api/listings/{listing_id}", auth=("admin", "admin-secret"))
+        assert admin.json()["url"] == "https://re.kufar.by/vi/42"

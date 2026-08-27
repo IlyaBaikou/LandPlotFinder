@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import copy
 import csv
 import hashlib
 import hmac
@@ -79,6 +80,7 @@ STATIC_DIR = Path(__file__).with_name("static")
 DECISION_STATES = {"new", "liked", "studying", "trip", "rejected"}
 ADMIN_SESSION_COOKIE = "lpf_admin_session"
 ADMIN_SESSION_TTL_SECONDS = 7 * 24 * 60 * 60
+AUTH_ROLES = {"admin", "viewer"}
 
 
 class DecisionPayload(BaseModel):
@@ -188,19 +190,22 @@ def create_app(settings: Optional[Settings] = None) -> FastAPI:
 
     @app.middleware("http")
     async def protect_admin(request: Request, call_next):
-        if not base_settings.admin_password or _is_public_widget_path(request.url.path):
+        auth_enabled = bool(base_settings.admin_password or base_settings.viewer_password)
+        if not auth_enabled or _is_public_widget_path(request.url.path):
+            request.state.auth_role = "admin"
             return await call_next(request)
         credentials = _basic_credentials(request.headers.get("Authorization"))
-        basic_valid = (
-            credentials
-            and secrets.compare_digest(credentials[0], base_settings.admin_username)
-            and secrets.compare_digest(credentials[1], base_settings.admin_password)
-        )
-        cookie_valid = _valid_admin_session(
+        role = _credentials_role(credentials, base_settings) or _session_role(
             request.cookies.get(ADMIN_SESSION_COOKIE),
             base_settings,
         )
-        if basic_valid or cookie_valid:
+        if role:
+            request.state.auth_role = role
+            if role == "viewer" and not _viewer_request_allowed(request):
+                return JSONResponse(
+                    {"detail": "Демо-доступ работает только в режиме просмотра"},
+                    status_code=403,
+                )
             return await call_next(request)
         if request.url.path.startswith("/api/"):
             return JSONResponse(
@@ -221,16 +226,13 @@ def create_app(settings: Optional[Settings] = None) -> FastAPI:
 
     @app.post("/api/auth/login")
     def admin_login(payload: AdminLoginPayload, request: Request) -> JSONResponse:
-        valid = bool(base_settings.admin_password) and secrets.compare_digest(
-            payload.username,
-            base_settings.admin_username,
-        ) and secrets.compare_digest(payload.password, base_settings.admin_password or "")
-        if not valid:
+        role = _credentials_role((payload.username, payload.password), base_settings)
+        if not role:
             raise HTTPException(status_code=401, detail="Неверный логин или пароль")
-        response = JSONResponse({"ok": True})
+        response = JSONResponse({"ok": True, "role": role, "read_only": role == "viewer"})
         response.set_cookie(
             ADMIN_SESSION_COOKIE,
-            _admin_session_token(base_settings),
+            _admin_session_token(base_settings, role, payload.username),
             max_age=ADMIN_SESSION_TTL_SECONDS,
             httponly=True,
             secure=request.url.scheme == "https",
@@ -240,6 +242,11 @@ def create_app(settings: Optional[Settings] = None) -> FastAPI:
         response.headers["Cache-Control"] = "no-store"
         return response
 
+    @app.get("/api/auth/me")
+    def auth_me(request: Request) -> Dict[str, Any]:
+        role = _request_role(request)
+        return {"role": role, "read_only": role == "viewer"}
+
     @app.post("/api/auth/logout")
     def admin_logout() -> JSONResponse:
         response = JSONResponse({"ok": True})
@@ -248,8 +255,9 @@ def create_app(settings: Optional[Settings] = None) -> FastAPI:
         return response
 
     @app.get("/api/settings")
-    def get_settings() -> Dict[str, Any]:
-        return public_web_config(load_web_config(base_settings.database_url))
+    def get_settings(request: Request) -> Dict[str, Any]:
+        value = public_web_config(load_web_config(base_settings.database_url))
+        return _viewer_web_config(value) if _is_viewer(request) else value
 
     @app.put("/api/settings")
     def put_settings(payload: SettingsPayload) -> Dict[str, Any]:
@@ -532,7 +540,7 @@ def create_app(settings: Optional[Settings] = None) -> FastAPI:
         return {"ok": True, "message": "Запрос передан специалисту"}
 
     @app.get("/api/widget/leads")
-    def widget_leads() -> Dict[str, Any]:
+    def widget_leads(request: Request) -> Dict[str, Any]:
         with _database(base_settings) as session:
             leads = session.scalars(
                 select(WidgetLeadModel)
@@ -545,7 +553,7 @@ def create_app(settings: Optional[Settings] = None) -> FastAPI:
         grouped: Dict[int, List[WidgetInterestModel]] = {}
         for interest in interests:
             grouped.setdefault(interest.lead_id, []).append(interest)
-        return {
+        value = {
             "total": len(leads),
             "requests_total": len(interests),
             "items": [
@@ -574,14 +582,21 @@ def create_app(settings: Optional[Settings] = None) -> FastAPI:
                 for lead in leads
             ],
         }
+        return _viewer_leads(value) if _is_viewer(request) else value
 
     @app.get("/api/profiles")
-    def profiles() -> Dict[str, Any]:
+    def profiles(request: Request) -> Dict[str, Any]:
         config = load_web_config(base_settings.database_url)
-        return {
+        value = {
             "active_profile_id": config["active_profile_id"],
             "items": config["profiles"],
         }
+        if _is_viewer(request):
+            value["items"] = [
+                {**profile, "name": f"Демо-профиль {index}"}
+                for index, profile in enumerate(value["items"], start=1)
+            ]
+        return value
 
     @app.post("/api/profiles", status_code=status.HTTP_201_CREATED)
     def create_profile(payload: SearchProfilePayload) -> Dict[str, Any]:
@@ -636,7 +651,7 @@ def create_app(settings: Optional[Settings] = None) -> FastAPI:
         }
 
     @app.get("/api/summary")
-    def summary(profile_id: Optional[str] = None) -> Dict[str, Any]:
+    def summary(request: Request, profile_id: Optional[str] = None) -> Dict[str, Any]:
         config = load_web_config(base_settings.database_url)
         selected_profile_id = _selected_profile_id(config, profile_id)
         with _database(base_settings) as session:
@@ -695,7 +710,7 @@ def create_app(settings: Optional[Settings] = None) -> FastAPI:
             latest = session.scalar(
                 select(ScanRunModel).order_by(ScanRunModel.started_at.desc()).limit(1)
             )
-            return {
+            value = {
                 "active": active,
                 "archived": archived,
                 "selected": liked,
@@ -705,9 +720,11 @@ def create_app(settings: Optional[Settings] = None) -> FastAPI:
                 "latest_run": _run_json(latest) if latest else None,
                 "job": coordinator.status(),
             }
+            return _viewer_summary(value) if _is_viewer(request) else value
 
     @app.get("/api/listings")
     def listings(
+        request: Request,
         q: str = "",
         decision: str = "all",
         source: str = "all",
@@ -785,6 +802,7 @@ def create_app(settings: Optional[Settings] = None) -> FastAPI:
                     _listing_json(
                         *row,
                         public_secret=base_settings.widget_auth_secret,
+                        viewer=_is_viewer(request),
                     )
                     for row in rows
                 ],
@@ -797,6 +815,7 @@ def create_app(settings: Optional[Settings] = None) -> FastAPI:
     @app.get("/api/listings/{listing_id}")
     def listing_detail(
         listing_id: int,
+        request: Request,
         profile_id: Optional[str] = None,
     ) -> Dict[str, Any]:
         config = load_web_config(base_settings.database_url)
@@ -832,6 +851,7 @@ def create_app(settings: Optional[Settings] = None) -> FastAPI:
                 *row,
                 detailed=True,
                 public_secret=base_settings.widget_auth_secret,
+                viewer=_is_viewer(request),
             )
 
     @app.put("/api/listings/{listing_id}/decision")
@@ -872,7 +892,7 @@ def create_app(settings: Optional[Settings] = None) -> FastAPI:
             }
 
     @app.get("/api/listings/{listing_id}/history")
-    def listing_history(listing_id: int) -> Dict[str, Any]:
+    def listing_history(listing_id: int, request: Request) -> Dict[str, Any]:
         with _database(base_settings) as session:
             listing = session.get(ListingModel, listing_id)
             if listing is None:
@@ -891,7 +911,7 @@ def create_app(settings: Optional[Settings] = None) -> FastAPI:
                     .order_by(ListingEventModel.occurred_at)
                 )
             )
-            return {
+            value = {
                 "listing_id": listing_id,
                 "first_seen_at": _iso(listing.first_seen_at),
                 "last_seen_at": _iso(listing.last_seen_at),
@@ -913,6 +933,7 @@ def create_app(settings: Optional[Settings] = None) -> FastAPI:
                     for event in events
                 ],
             }
+            return _viewer_history(value) if _is_viewer(request) else value
 
     @app.post("/api/jobs/{kind}", status_code=status.HTTP_202_ACCEPTED)
     def start_job(kind: str, profile_id: Optional[str] = None) -> JSONResponse:
@@ -934,11 +955,12 @@ def create_app(settings: Optional[Settings] = None) -> FastAPI:
         return JSONResponse(status_code=202, content={"ok": True, "kind": kind})
 
     @app.get("/api/jobs")
-    def jobs() -> Dict[str, Any]:
-        return coordinator.status()
+    def jobs(request: Request) -> Dict[str, Any]:
+        value = coordinator.status()
+        return _viewer_job(value) if _is_viewer(request) else value
 
     @app.get("/api/map")
-    def map_points(profile_id: Optional[str] = None) -> Dict[str, Any]:
+    def map_points(request: Request, profile_id: Optional[str] = None) -> Dict[str, Any]:
         config = load_web_config(base_settings.database_url)
         map_provider = config["map_provider"]
         selected_profile_id = _selected_profile_id(config, profile_id)
@@ -967,16 +989,40 @@ def create_app(settings: Optional[Settings] = None) -> FastAPI:
             items = []
             for listing, decision, match in rows:
                 point = _trip_point(listing, decision)
+                viewer = _is_viewer(request)
+                latitude = round(listing.latitude, 2) if viewer else listing.latitude
+                longitude = round(listing.longitude, 2) if viewer else listing.longitude
+                if viewer:
+                    point = TripPoint(
+                        **{
+                            **point.__dict__,
+                            "place": _public_listing_ref(
+                                base_settings.widget_auth_secret,
+                                listing.id,
+                            ),
+                            "listing_url": "",
+                            "latitude": latitude,
+                            "longitude": longitude,
+                        }
+                    )
                 items.append(
                     {
                         "id": listing.id,
-                        "title": listing.title,
-                        "latitude": listing.latitude,
-                        "longitude": listing.longitude,
+                        "title": (
+                            "Объект "
+                            + _public_listing_ref(
+                                base_settings.widget_auth_secret,
+                                listing.id,
+                            )
+                            if viewer
+                            else listing.title
+                        ),
+                        "latitude": latitude,
+                        "longitude": longitude,
                         "price_usd": listing.price_usd,
                         "area_sotok": listing.area_sotok,
                         "score": match.score,
-                        "url": listing.canonical_url,
+                        "url": None if viewer else listing.canonical_url,
                         "decision": decision.state if decision else "new",
                         "map_url": maps_pin_url(point, map_provider),
                     }
@@ -988,7 +1034,7 @@ def create_app(settings: Optional[Settings] = None) -> FastAPI:
             }
 
     @app.get("/api/source-health")
-    def source_health(profile_id: Optional[str] = None) -> Dict[str, Any]:
+    def source_health(request: Request, profile_id: Optional[str] = None) -> Dict[str, Any]:
         config = load_web_config(base_settings.database_url)
         selected_profile_id = _selected_profile_id(config, profile_id)
         profile = get_profile(config, selected_profile_id)
@@ -1014,7 +1060,8 @@ def create_app(settings: Optional[Settings] = None) -> FastAPI:
                     },
                 )
             )
-        return {"profile_id": selected_profile_id, "items": items}
+        value = {"profile_id": selected_profile_id, "items": items}
+        return _viewer_health(value) if _is_viewer(request) else value
 
     @app.post("/api/trips/plan")
     def trip_plan(
@@ -1219,10 +1266,12 @@ def _listing_json(
     profile: Optional[ListingProfileModel],
     detailed: bool = False,
     public_secret: Optional[str] = None,
+    viewer: bool = False,
 ) -> Dict[str, Any]:
+    public_ref = _public_listing_ref(public_secret, listing.id) if public_secret else None
     value: Dict[str, Any] = {
         "id": listing.id,
-        "public_ref": (_public_listing_ref(public_secret, listing.id) if public_secret else None),
+        "public_ref": public_ref,
         "external_id": f"{listing.source}:{listing.source_id}",
         "source": listing.source,
         "title": listing.title,
@@ -1269,6 +1318,27 @@ def _listing_json(
                 "evidence": listing.evidence or {},
             }
         )
+    if viewer:
+        value.update(
+            {
+                "external_id": public_ref,
+                "title": f"Объект {public_ref or listing.id}",
+                "district": "Пригород",
+                "locality": "Выбранное направление",
+                "address": None,
+                "latitude": round(listing.latitude, 2) if listing.latitude is not None else None,
+                "longitude": round(listing.longitude, 2) if listing.longitude is not None else None,
+                "note": "",
+                "url": None,
+            }
+        )
+        if detailed:
+            value.update(
+                {
+                    "description": "Описание и контакты скрыты в демонстрационном режиме.",
+                    "evidence": {},
+                }
+            )
     return value
 
 
@@ -1744,13 +1814,139 @@ def _is_public_widget_path(path: str) -> bool:
     } or path.startswith(("/api/public/widget/", "/static/"))
 
 
+def _viewer_web_config(value: Dict[str, Any]) -> Dict[str, Any]:
+    result = copy.deepcopy(value)
+    result.update(
+        {
+            "telegram_enabled": False,
+            "telegram_bot_token": "",
+            "telegram_chat_id": "",
+            "telegram_configured": False,
+        }
+    )
+    result["profiles"] = [
+        {**profile, "name": f"Демо-профиль {index}"}
+        for index, profile in enumerate(result.get("profiles", []), start=1)
+    ]
+    return result
+
+
+def _viewer_leads(value: Dict[str, Any]) -> Dict[str, Any]:
+    result = copy.deepcopy(value)
+    for lead in result.get("items", []):
+        lead.update({"phone": "+375 •• •••-••-••", "source_page": "", "utm": {}})
+        for interest in lead.get("interests", []):
+            reference = interest.get("reference") or "LP-DEMO"
+            interest.update(
+                {
+                    "title": f"Объект {reference}",
+                    "url": None,
+                    "search_params": {
+                        key: item
+                        for key, item in (interest.get("search_params") or {}).items()
+                        if key
+                        in {
+                            "max_price_usd",
+                            "min_area_sotok",
+                            "max_area_sotok",
+                            "max_distance_km",
+                            "electricity",
+                            "gas",
+                            "water",
+                            "sewerage",
+                        }
+                    },
+                }
+            )
+    return result
+
+
+def _viewer_job(value: Dict[str, Any]) -> Dict[str, Any]:
+    result = copy.deepcopy(value)
+    if result.get("last_error"):
+        result["last_error"] = "Последний запуск завершился с ошибкой"
+    last_result = result.get("last_result")
+    if isinstance(last_result, dict) and last_result.get("errors"):
+        last_result["errors"] = {"sources": "Некоторые источники требуют проверки"}
+    for job in result.get("scheduled", []):
+        job["name"] = "Автоматический поиск"
+    return result
+
+
+def _viewer_summary(value: Dict[str, Any]) -> Dict[str, Any]:
+    result = copy.deepcopy(value)
+    result["job"] = _viewer_job(result.get("job") or {})
+    latest = result.get("latest_run")
+    if isinstance(latest, dict) and latest.get("errors"):
+        latest["errors"] = {"sources": "Некоторые источники требуют проверки"}
+    return result
+
+
+def _viewer_health(value: Dict[str, Any]) -> Dict[str, Any]:
+    result = copy.deepcopy(value)
+    for item in result.get("items", []):
+        if item.get("last_error"):
+            item["last_error"] = "Последняя проверка завершилась ошибкой"
+        diagnostics = item.get("diagnostics")
+        if isinstance(diagnostics, dict) and diagnostics.get("warnings"):
+            diagnostics["warnings"] = ["Источник требует внимания"]
+    return result
+
+
+def _viewer_history(value: Dict[str, Any]) -> Dict[str, Any]:
+    result = copy.deepcopy(value)
+    for event in result.get("events", []):
+        payload = event.get("payload") or {}
+        if event.get("type") == "decision":
+            event["payload"] = {
+                key: payload[key]
+                for key in ("from", "to", "note_changed")
+                if key in payload
+            }
+        elif event.get("type") == "updated":
+            event["payload"] = {
+                "changes": {
+                    key: {"label": change.get("label", key)}
+                    for key, change in (payload.get("changes") or {}).items()
+                    if isinstance(change, dict)
+                }
+            }
+        else:
+            event["payload"] = {}
+    return result
+
+
+def _viewer_request_allowed(request: Request) -> bool:
+    if request.url.path == "/api/auth/logout":
+        return True
+    if request.method not in {"GET", "HEAD", "OPTIONS"}:
+        return False
+    return request.url.path not in {
+        "/api/export.csv",
+        "/api/backups/info",
+        "/api/backups/download",
+    }
+
+
+def _request_role(request: Request) -> str:
+    role = str(getattr(request.state, "auth_role", "admin"))
+    return role if role in AUTH_ROLES else "admin"
+
+
+def _is_viewer(request: Request) -> bool:
+    return _request_role(request) == "viewer"
+
+
 def _admin_session_secret(settings: Settings) -> bytes:
-    return f"{settings.admin_password or ''}\0{settings.widget_auth_secret}".encode("utf-8")
+    return (
+        f"{settings.admin_password or ''}\0{settings.viewer_password or ''}"
+        f"\0{settings.widget_auth_secret}"
+    ).encode("utf-8")
 
 
-def _admin_session_token(settings: Settings) -> str:
+def _admin_session_token(settings: Settings, role: str, username: str) -> str:
     expires_at = int(time.time()) + ADMIN_SESSION_TTL_SECONDS
-    payload = f"{settings.admin_username}:{expires_at}".encode("utf-8")
+    payload = f"{role}:{username}:{expires_at}".encode("utf-8")
     encoded = urlsafe_b64encode(payload).decode("ascii").rstrip("=")
     signature = hmac.new(
         _admin_session_secret(settings),
@@ -1760,9 +1956,9 @@ def _admin_session_token(settings: Settings) -> str:
     return f"{encoded}.{signature}"
 
 
-def _valid_admin_session(value: Optional[str], settings: Settings) -> bool:
-    if not value or not settings.admin_password or "." not in value:
-        return False
+def _session_role(value: Optional[str], settings: Settings) -> Optional[str]:
+    if not value or "." not in value:
+        return None
     encoded, signature = value.rsplit(".", 1)
     expected = hmac.new(
         _admin_session_secret(settings),
@@ -1770,15 +1966,42 @@ def _valid_admin_session(value: Optional[str], settings: Settings) -> bool:
         hashlib.sha256,
     ).hexdigest()
     if not secrets.compare_digest(signature, expected):
-        return False
+        return None
     try:
         padding = "=" * (-len(encoded) % 4)
-        username, expires_at = urlsafe_b64decode(encoded + padding).decode("utf-8").rsplit(":", 1)
-        return secrets.compare_digest(username, settings.admin_username) and int(expires_at) > int(
-            time.time()
+        role, username, expires_at = (
+            urlsafe_b64decode(encoded + padding).decode("utf-8").rsplit(":", 2)
         )
+        if role not in AUTH_ROLES or int(expires_at) <= int(time.time()):
+            return None
+        expected_username = (
+            settings.admin_username if role == "admin" else settings.viewer_username
+        )
+        password = settings.admin_password if role == "admin" else settings.viewer_password
+        return role if password and secrets.compare_digest(username, expected_username) else None
     except (ValueError, UnicodeDecodeError, BinasciiError):
-        return False
+        return None
+
+
+def _credentials_role(
+    credentials: Optional[tuple[str, str]],
+    settings: Settings,
+) -> Optional[str]:
+    if not credentials:
+        return None
+    username, password = credentials
+    candidates = (
+        ("admin", settings.admin_username, settings.admin_password),
+        ("viewer", settings.viewer_username, settings.viewer_password),
+    )
+    for role, expected_username, expected_password in candidates:
+        if (
+            expected_password
+            and secrets.compare_digest(username, expected_username)
+            and secrets.compare_digest(password, expected_password)
+        ):
+            return role
+    return None
 
 
 def _basic_credentials(value: Optional[str]) -> Optional[tuple[str, str]]:

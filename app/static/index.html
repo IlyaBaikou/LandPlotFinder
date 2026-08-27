@@ -31,6 +31,7 @@
       <div class="sidebar-footer">
         <div class="service-state"><i id="serviceDot"></i><span id="serviceText">Локальный сервис</span></div>
         <small>Данные хранятся на этом компьютере</small>
+        <button class="logout-button" id="logoutButton" type="button">Выйти</button>
       </div>
     </aside>
 
@@ -42,6 +43,7 @@
           <h1 id="pageTitle">Добрый день</h1>
         </div>
         <div class="top-actions">
+          <div class="viewer-badge" id="viewerBadge" hidden>Демо · только просмотр</div>
           <select class="profile-picker" id="profileSelect" aria-label="Профиль поиска"></select>
           <div class="job-pill" id="jobPill"><span></span><b>В ожидании</b></div>
           <button class="button primary" id="scanButton">▶ Запустить поиск</button>
@@ -166,13 +168,13 @@
               <label><span>Повторять каждые, часов</span><input name="schedule_interval_hours" type="number" min="1" max="168"></label>
               <label class="toggle-row"><span><b>Проверять актуальность</b><small>Снятые объявления уйдут в архив</small></span><input type="checkbox" name="activity_check_enabled" class="toggle"></label>
             </div>
-            <div class="panel">
+            <div class="panel" id="telegramPanel">
               <p class="eyebrow">Необязательно</p><h3>Telegram</h3>
               <label class="toggle-row"><span><b>Присылать уведомления</b></span><input type="checkbox" name="telegram_enabled" class="toggle"></label>
               <label><span>Токен бота</span><input name="telegram_bot_token" type="password" autocomplete="off"></label>
               <label><span>ID чата</span><input name="telegram_chat_id" autocomplete="off"></label>
             </div>
-            <div class="panel">
+            <div class="panel" id="backupPanel">
               <p class="eyebrow">Ваши данные</p><h3>Резервная копия</h3>
               <p class="backup-copy" id="backupInfo">Считаем объём базы…</p>
               <a class="button secondary full" href="/api/backups/download">Скачать копию</a>
@@ -210,6 +212,6 @@
   <div class="toast" id="toast" role="status"></div>
 
   <script src="https://unpkg.com/leaflet@1.9.4/dist/leaflet.js"></script>
-  <script src="/static/app.js?v=20260827-domovita"></script>
+  <script src="/static/app.js?v=20260827-viewer"></script>
 </body>
 </html>
