@@ -19,7 +19,7 @@ OTP_TTL_MINUTES = 10
 OTP_COOLDOWN_SECONDS = 60
 OTP_MAX_REQUESTS_PER_HOUR = 5
 OTP_MAX_ATTEMPTS = 5
-SESSION_TTL_HOURS = 24
+SESSION_TTL_DAYS = 30
 
 
 class WidgetError(Exception):
@@ -110,12 +110,12 @@ def verify_code(
     lead.otp_hash = None
     lead.otp_expires_at = None
     lead.session_token_hash = _token_hash(token)
-    lead.session_expires_at = now + timedelta(hours=SESSION_TTL_HOURS)
+    lead.session_expires_at = now + timedelta(days=SESSION_TTL_DAYS)
     return {
         "ok": True,
         "token": token,
         "phone": mask_phone(phone),
-        "expires_in_seconds": SESSION_TTL_HOURS * 60 * 60,
+        "expires_in_seconds": SESSION_TTL_DAYS * 24 * 60 * 60,
     }
 
 
@@ -161,8 +161,10 @@ def record_interest(
     interest.search_params = clean_mapping(search_params or {}, 30)
     interest.source_page = _short(source_page, 2_000) or lead.source_page
     return {
+        "event": "listing_interest",
         "lead_id": lead.id,
         "phone": lead.phone,
+        "name": interest.search_params.get("contact_name", ""),
         "listing_id": listing.id,
         "listing_title": listing.title,
         "listing_url": listing.canonical_url,

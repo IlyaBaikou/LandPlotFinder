@@ -133,6 +133,7 @@ class WidgetCodeVerify(BaseModel):
 
 class WidgetInterestPayload(BaseModel):
     listing_id: int = Field(gt=0)
+    name: str = Field(default="", max_length=80)
     search_params: Dict[str, Any] = Field(default_factory=dict)
     source_page: str = Field(default="", max_length=2_000)
 
@@ -221,9 +222,60 @@ def create_app(settings: Optional[Settings] = None) -> FastAPI:
     def widget_verify_code(payload: WidgetCodeVerify) -> Dict[str, Any]:
         try:
             with _database(base_settings) as session:
-                return verify_code(session, base_settings, payload.phone, payload.code)
+                result = verify_code(
+                    session,
+                    base_settings,
+                    payload.phone,
+                    payload.code,
+                )
+                lead = verified_lead(session, result["token"])
+                notification = {
+                    "event": "lead_verified",
+                    "lead_id": lead.id,
+                    "phone": lead.phone,
+                    "source_page": lead.source_page,
+                    "utm": lead.utm,
+                }
         except WidgetError as exc:
             raise HTTPException(status_code=exc.status_code, detail=exc.detail) from exc
+        notify_lead(base_settings, notification)
+        return result
+
+    @app.get("/api/public/widget/preview")
+    def public_widget_preview(
+        q: str = Query(default="", max_length=120),
+        max_price_usd: Optional[float] = Query(default=None, gt=0, le=10_000_000),
+        min_area_sotok: Optional[float] = Query(default=None, gt=0, le=10_000),
+        max_area_sotok: Optional[float] = Query(default=None, gt=0, le=10_000),
+        max_distance_km: Optional[float] = Query(default=None, ge=0, le=1_000),
+        electricity: bool = False,
+        gas: bool = False,
+        profile_id: Optional[str] = Query(default=None, max_length=64),
+    ) -> JSONResponse:
+        _validate_widget_area(min_area_sotok, max_area_sotok)
+        config = load_web_config(base_settings.database_url)
+        selected_profile_id = _selected_profile_id(
+            config,
+            profile_id or base_settings.widget_profile_id,
+        )
+        statement = _widget_listing_statement(
+            selected_profile_id,
+            q,
+            max_price_usd,
+            min_area_sotok,
+            max_area_sotok,
+            max_distance_km,
+            electricity,
+            gas,
+        )
+        with _database(base_settings) as session:
+            total = session.scalar(
+                select(func.count()).select_from(statement.subquery())
+            ) or 0
+        return JSONResponse(
+            {"total": total, "preview_cards": min(total, 3)},
+            headers={"Cache-Control": "public, max-age=60"},
+        )
 
     @app.get("/api/public/widget/listings")
     def public_widget_listings(
@@ -238,15 +290,7 @@ def create_app(settings: Optional[Settings] = None) -> FastAPI:
         limit: int = Query(default=6, ge=1, le=12),
         profile_id: Optional[str] = Query(default=None, max_length=64),
     ) -> JSONResponse:
-        if (
-            min_area_sotok is not None
-            and max_area_sotok is not None
-            and min_area_sotok > max_area_sotok
-        ):
-            raise HTTPException(
-                status_code=422,
-                detail="Минимальная площадь не может быть больше максимальной",
-            )
+        _validate_widget_area(min_area_sotok, max_area_sotok)
         config = load_web_config(base_settings.database_url)
         selected_profile_id = _selected_profile_id(
             config,
@@ -256,75 +300,16 @@ def create_app(settings: Optional[Settings] = None) -> FastAPI:
         try:
             with _database(base_settings) as session:
                 verified_lead(session, _bearer_token(request))
-                statement = (
-                    select(ListingModel, ListingProfileModel)
-                    .join(
-                        ListingProfileModel,
-                        and_(
-                            ListingProfileModel.listing_id == ListingModel.id,
-                            ListingProfileModel.profile_id == selected_profile_id,
-                        ),
-                    )
-                    .where(ListingModel.active.is_(True))
+                statement = _widget_listing_statement(
+                    selected_profile_id,
+                    q,
+                    max_price_usd,
+                    min_area_sotok,
+                    max_area_sotok,
+                    max_distance_km,
+                    electricity,
+                    gas,
                 )
-                conditions = []
-                if q.strip():
-                    pattern = f"%{q.strip()}%"
-                    conditions.append(
-                        or_(
-                            ListingModel.title.ilike(pattern),
-                            ListingModel.locality.ilike(pattern),
-                            ListingModel.district.ilike(pattern),
-                            ListingModel.direction.ilike(pattern),
-                            ListingModel.description.ilike(pattern),
-                        )
-                    )
-                if max_price_usd is not None:
-                    conditions.extend(
-                        [
-                            ListingModel.price_usd.is_not(None),
-                            ListingModel.price_usd <= max_price_usd,
-                        ]
-                    )
-                if min_area_sotok is not None:
-                    conditions.extend(
-                        [
-                            ListingModel.area_sotok.is_not(None),
-                            ListingModel.area_sotok >= min_area_sotok,
-                        ]
-                    )
-                if max_area_sotok is not None:
-                    conditions.extend(
-                        [
-                            ListingModel.area_sotok.is_not(None),
-                            ListingModel.area_sotok <= max_area_sotok,
-                        ]
-                    )
-                if max_distance_km is not None:
-                    conditions.extend(
-                        [
-                            ListingModel.distance_mkad_km.is_not(None),
-                            ListingModel.distance_mkad_km <= max_distance_km,
-                        ]
-                    )
-                if electricity:
-                    conditions.append(
-                        or_(
-                            ListingModel.electricity_kw > 0,
-                            and_(
-                                ListingModel.electricity_raw.is_not(None),
-                                ListingModel.electricity_raw != "",
-                            ),
-                        )
-                    )
-                if gas:
-                    conditions.append(
-                        and_(
-                            ListingModel.gas_raw.is_not(None),
-                            ListingModel.gas_raw != "",
-                        )
-                    )
-                statement = statement.where(*conditions)
                 total = session.scalar(
                     select(func.count()).select_from(statement.subquery())
                 ) or 0
@@ -360,7 +345,10 @@ def create_app(settings: Optional[Settings] = None) -> FastAPI:
                     session,
                     lead,
                     payload.listing_id,
-                    payload.search_params,
+                    {
+                        **payload.search_params,
+                        "contact_name": payload.name.strip(),
+                    },
                     payload.source_page,
                 )
         except WidgetError as exc:
@@ -1118,6 +1106,102 @@ def _selected_profile_id(config: Dict[str, Any], profile_id: Optional[str]) -> s
     except KeyError as exc:
         raise HTTPException(status_code=404, detail="Профиль поиска не найден") from exc
     return selected
+
+
+def _validate_widget_area(
+    min_area_sotok: Optional[float],
+    max_area_sotok: Optional[float],
+) -> None:
+    if (
+        min_area_sotok is not None
+        and max_area_sotok is not None
+        and min_area_sotok > max_area_sotok
+    ):
+        raise HTTPException(
+            status_code=422,
+            detail="Минимальная площадь не может быть больше максимальной",
+        )
+
+
+def _widget_listing_statement(
+    profile_id: str,
+    q: str,
+    max_price_usd: Optional[float],
+    min_area_sotok: Optional[float],
+    max_area_sotok: Optional[float],
+    max_distance_km: Optional[float],
+    electricity: bool,
+    gas: bool,
+):
+    statement = (
+        select(ListingModel, ListingProfileModel)
+        .join(
+            ListingProfileModel,
+            and_(
+                ListingProfileModel.listing_id == ListingModel.id,
+                ListingProfileModel.profile_id == profile_id,
+            ),
+        )
+        .where(ListingModel.active.is_(True))
+    )
+    conditions = []
+    if q.strip():
+        pattern = f"%{q.strip()}%"
+        conditions.append(
+            or_(
+                ListingModel.title.ilike(pattern),
+                ListingModel.locality.ilike(pattern),
+                ListingModel.district.ilike(pattern),
+                ListingModel.direction.ilike(pattern),
+                ListingModel.description.ilike(pattern),
+            )
+        )
+    if max_price_usd is not None:
+        conditions.extend(
+            [
+                ListingModel.price_usd.is_not(None),
+                ListingModel.price_usd <= max_price_usd,
+            ]
+        )
+    if min_area_sotok is not None:
+        conditions.extend(
+            [
+                ListingModel.area_sotok.is_not(None),
+                ListingModel.area_sotok >= min_area_sotok,
+            ]
+        )
+    if max_area_sotok is not None:
+        conditions.extend(
+            [
+                ListingModel.area_sotok.is_not(None),
+                ListingModel.area_sotok <= max_area_sotok,
+            ]
+        )
+    if max_distance_km is not None:
+        conditions.extend(
+            [
+                ListingModel.distance_mkad_km.is_not(None),
+                ListingModel.distance_mkad_km <= max_distance_km,
+            ]
+        )
+    if electricity:
+        conditions.append(
+            or_(
+                ListingModel.electricity_kw > 0,
+                and_(
+                    ListingModel.electricity_raw.is_not(None),
+                    ListingModel.electricity_raw != "",
+                ),
+            )
+        )
+    if gas:
+        conditions.append(
+            and_(
+                ListingModel.gas_raw.is_not(None),
+                ListingModel.gas_raw != "",
+            )
+        )
+    return statement.where(*conditions)
 
 
 def _is_public_widget_path(path: str) -> bool:

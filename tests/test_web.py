@@ -173,6 +173,19 @@ def test_public_widget_phone_search_and_interest(tmp_path) -> None:
 
     with TestClient(create_app(settings)) as client:
         assert client.get("/api/public/widget/listings").status_code == 401
+        preview = client.get(
+            "/api/public/widget/preview",
+            params={
+                "q": "Новосёлки",
+                "max_price_usd": 25_000,
+                "min_area_sotok": 9,
+                "max_area_sotok": 11,
+                "max_distance_km": 30,
+            },
+        )
+        assert preview.status_code == 200
+        assert preview.json() == {"total": 1, "preview_cards": 1}
+        assert "items" not in preview.json()
 
         requested = client.post(
             "/api/public/widget/auth/request-code",
@@ -197,6 +210,7 @@ def test_public_widget_phone_search_and_interest(tmp_path) -> None:
             },
         )
         assert verified.status_code == 200
+        assert verified.json()["expires_in_seconds"] == 30 * 24 * 60 * 60
         token = verified.json()["token"]
         headers = {"Authorization": f"Bearer {token}"}
 
@@ -223,6 +237,7 @@ def test_public_widget_phone_search_and_interest(tmp_path) -> None:
             headers=headers,
             json={
                 "listing_id": listing_id,
+                "name": "Илья",
                 "search_params": {"max_price_usd": "25000"},
                 "source_page": "https://example.tilda.ws/plots",
             },
@@ -233,6 +248,10 @@ def test_public_widget_phone_search_and_interest(tmp_path) -> None:
         assert leads["total"] == 1
         assert leads["items"][0]["phone"] == "+375291234567"
         assert leads["items"][0]["interests"][0]["listing_id"] == listing_id
+        assert (
+            leads["items"][0]["interests"][0]["search_params"]["contact_name"]
+            == "Илья"
+        )
 
 
 def test_admin_password_does_not_block_public_widget(tmp_path) -> None:
