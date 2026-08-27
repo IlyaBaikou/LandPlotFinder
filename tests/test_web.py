@@ -38,6 +38,9 @@ def _seed_listing(settings) -> int:
             distance_mkad_km=22,
             latitude=53.95,
             longitude=27.56,
+            electricity_raw="20 кВт на участке",
+            electricity_kw=20,
+            gas_raw="по улице",
             status="MATCH",
             score=91,
             content_hash="hash",
@@ -162,3 +165,83 @@ def test_web_profiles_history_routes_health_and_backup(tmp_path) -> None:
         second_id = created.json()["id"]
         assert client.get(f"/api/listings?profile_id={second_id}").json()["total"] == 0
         assert client.delete(f"/api/profiles/{second_id}").status_code == 200
+
+
+def test_public_widget_phone_search_and_interest(tmp_path) -> None:
+    settings = _settings(tmp_path)
+    listing_id = _seed_listing(settings)
+
+    with TestClient(create_app(settings)) as client:
+        assert client.get("/api/public/widget/listings").status_code == 401
+
+        requested = client.post(
+            "/api/public/widget/auth/request-code",
+            headers={"Origin": "https://example.tilda.ws"},
+            json={
+                "phone": "+375 29 123-45-67",
+                "consent": True,
+                "source_page": "https://example.tilda.ws/plots?utm_source=test",
+                "utm": {"utm_source": "test"},
+            },
+        )
+        assert requested.status_code == 200
+        assert requested.json()["mode"] == "demo"
+        assert len(requested.json()["demo_code"]) == 6
+        assert requested.headers["access-control-allow-origin"] == "*"
+
+        verified = client.post(
+            "/api/public/widget/auth/verify-code",
+            json={
+                "phone": "+375291234567",
+                "code": requested.json()["demo_code"],
+            },
+        )
+        assert verified.status_code == 200
+        token = verified.json()["token"]
+        headers = {"Authorization": f"Bearer {token}"}
+
+        catalog = client.get(
+            "/api/public/widget/listings",
+            headers=headers,
+            params={
+                "q": "Новосёлки",
+                "max_price_usd": 25_000,
+                "min_area_sotok": 9,
+                "max_area_sotok": 11,
+                "max_distance_km": 30,
+                "electricity": True,
+                "gas": True,
+            },
+        )
+        assert catalog.status_code == 200
+        assert catalog.json()["total"] == 1
+        assert catalog.json()["items"][0]["id"] == listing_id
+        assert catalog.json()["items"][0]["electricity_kw"] == 20
+
+        interest = client.post(
+            "/api/public/widget/interests",
+            headers=headers,
+            json={
+                "listing_id": listing_id,
+                "search_params": {"max_price_usd": "25000"},
+                "source_page": "https://example.tilda.ws/plots",
+            },
+        )
+        assert interest.status_code == 200
+
+        leads = client.get("/api/widget/leads").json()
+        assert leads["total"] == 1
+        assert leads["items"][0]["phone"] == "+375291234567"
+        assert leads["items"][0]["interests"][0]["listing_id"] == listing_id
+
+
+def test_admin_password_does_not_block_public_widget(tmp_path) -> None:
+    settings = replace(_settings(tmp_path), admin_password="very-secret")
+
+    with TestClient(create_app(settings)) as client:
+        assert client.get("/").status_code == 401
+        assert client.get("/api/widget/leads").status_code == 401
+        assert client.get("/widget-demo").status_code == 200
+        assert client.get("/static/landplotfinder-widget.js").status_code == 200
+        assert client.get("/health").status_code == 200
+        assert client.get("/", auth=("admin", "very-secret")).status_code == 200

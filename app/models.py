@@ -175,6 +175,61 @@ class ListingDecisionModel(Base):
     )
 
 
+class WidgetLeadModel(Base):
+    __tablename__ = "widget_leads"
+
+    id: Mapped[int] = mapped_column(Integer, primary_key=True)
+    phone: Mapped[str] = mapped_column(String(32), nullable=False, unique=True, index=True)
+    consent_at: Mapped[datetime] = mapped_column(
+        DateTime(timezone=True), nullable=False, default=utcnow
+    )
+    verified_at: Mapped[Optional[datetime]] = mapped_column(DateTime(timezone=True))
+    created_at: Mapped[datetime] = mapped_column(
+        DateTime(timezone=True), nullable=False, default=utcnow
+    )
+    last_seen_at: Mapped[datetime] = mapped_column(
+        DateTime(timezone=True), nullable=False, default=utcnow, onupdate=utcnow
+    )
+    source_page: Mapped[Optional[str]] = mapped_column(Text)
+    utm: Mapped[Dict[str, Any]] = mapped_column(JSON, nullable=False, default=dict)
+    otp_hash: Mapped[Optional[str]] = mapped_column(String(64))
+    otp_expires_at: Mapped[Optional[datetime]] = mapped_column(DateTime(timezone=True))
+    otp_attempts: Mapped[int] = mapped_column(Integer, nullable=False, default=0)
+    otp_request_count: Mapped[int] = mapped_column(Integer, nullable=False, default=0)
+    otp_window_started_at: Mapped[Optional[datetime]] = mapped_column(
+        DateTime(timezone=True)
+    )
+    last_code_sent_at: Mapped[Optional[datetime]] = mapped_column(DateTime(timezone=True))
+    session_token_hash: Mapped[Optional[str]] = mapped_column(
+        String(64), index=True
+    )
+    session_expires_at: Mapped[Optional[datetime]] = mapped_column(
+        DateTime(timezone=True)
+    )
+
+
+class WidgetInterestModel(Base):
+    __tablename__ = "widget_interests"
+    __table_args__ = (
+        UniqueConstraint("lead_id", "listing_id", name="uq_widget_lead_listing"),
+    )
+
+    id: Mapped[int] = mapped_column(Integer, primary_key=True)
+    lead_id: Mapped[int] = mapped_column(
+        ForeignKey("widget_leads.id", ondelete="CASCADE"), nullable=False, index=True
+    )
+    listing_id: Mapped[int] = mapped_column(
+        ForeignKey("listings.id", ondelete="CASCADE"), nullable=False, index=True
+    )
+    listing_title: Mapped[str] = mapped_column(Text, nullable=False)
+    listing_url: Mapped[str] = mapped_column(Text, nullable=False)
+    search_params: Mapped[Dict[str, Any]] = mapped_column(JSON, nullable=False, default=dict)
+    source_page: Mapped[Optional[str]] = mapped_column(Text)
+    created_at: Mapped[datetime] = mapped_column(
+        DateTime(timezone=True), nullable=False, default=utcnow
+    )
+
+
 class ScanRunModel(Base):
     __tablename__ = "scan_runs"
 

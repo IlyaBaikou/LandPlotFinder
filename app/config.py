@@ -77,6 +77,16 @@ class Settings:
     telegram_bot_token: Optional[str] = None
     telegram_chat_id: Optional[str] = None
     telegram_webhook_secret: Optional[str] = None
+    widget_profile_id: Optional[str] = None
+    widget_allowed_origins: List[str] = field(default_factory=lambda: ["*"])
+    widget_phone_auth_mode: str = "demo"
+    widget_auth_secret: str = "local-demo-secret"
+    widget_sms_webhook_url: Optional[str] = None
+    widget_sms_webhook_token: Optional[str] = None
+    widget_lead_webhook_url: Optional[str] = None
+    widget_lead_webhook_token: Optional[str] = None
+    admin_username: str = "admin"
+    admin_password: Optional[str] = None
 
     @property
     def sheets_enabled(self) -> bool:
@@ -285,4 +295,15 @@ def load_settings(env_file: Optional[str] = None) -> Settings:
         telegram_bot_token=os.getenv("TELEGRAM_BOT_TOKEN") or None,
         telegram_chat_id=os.getenv("TELEGRAM_CHAT_ID") or None,
         telegram_webhook_secret=os.getenv("TELEGRAM_WEBHOOK_SECRET") or None,
+        widget_profile_id=os.getenv("WIDGET_PROFILE_ID") or None,
+        widget_allowed_origins=_as_urls(os.getenv("WIDGET_ALLOWED_ORIGINS", "*"))
+        or ["*"],
+        widget_phone_auth_mode=os.getenv("WIDGET_PHONE_AUTH_MODE", "demo").strip().lower(),
+        widget_auth_secret=os.getenv("WIDGET_AUTH_SECRET", "local-demo-secret"),
+        widget_sms_webhook_url=os.getenv("WIDGET_SMS_WEBHOOK_URL") or None,
+        widget_sms_webhook_token=os.getenv("WIDGET_SMS_WEBHOOK_TOKEN") or None,
+        widget_lead_webhook_url=os.getenv("WIDGET_LEAD_WEBHOOK_URL") or None,
+        widget_lead_webhook_token=os.getenv("WIDGET_LEAD_WEBHOOK_TOKEN") or None,
+        admin_username=os.getenv("ADMIN_USERNAME", "admin").strip() or "admin",
+        admin_password=os.getenv("ADMIN_PASSWORD") or None,
     )

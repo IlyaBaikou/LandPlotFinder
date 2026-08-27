@@ -2,5 +2,8 @@
 builder = "DOCKERFILE"
 
 [deploy]
-startCommand = "python -m app.cli check-config"
-restartPolicyType = "NEVER"
+startCommand = "python -m app.web"
+healthcheckPath = "/health"
+healthcheckTimeout = 300
+restartPolicyType = "ON_FAILURE"
+restartPolicyMaxRetries = 5

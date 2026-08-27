@@ -5,6 +5,9 @@ import io
 import logging
 import math
 import os
+import secrets
+from base64 import b64decode
+from binascii import Error as BinasciiError
 from contextlib import asynccontextmanager, contextmanager
 from datetime import datetime
 from pathlib import Path
@@ -12,12 +15,14 @@ from typing import Any, Dict, List, Literal, Optional
 
 import uvicorn
 from fastapi import FastAPI, HTTPException, Query, Request, status
-from fastapi.responses import FileResponse, JSONResponse, StreamingResponse
+from fastapi.middleware.cors import CORSMiddleware
+from fastapi.responses import FileResponse, JSONResponse, PlainTextResponse, StreamingResponse
 from fastapi.staticfiles import StaticFiles
 from pydantic import BaseModel, Field
 from sqlalchemy import and_, func, or_, select
 from starlette.background import BackgroundTask
 
+from app import __version__
 from app.backups import (
     backup_filename,
     create_backup,
@@ -42,6 +47,8 @@ from app.models import (
     ListingProfileModel,
     ListingSnapshotModel,
     ScanRunModel,
+    WidgetInterestModel,
+    WidgetLeadModel,
 )
 from app.source_health import health_payloads
 from app.web_config import (
@@ -51,6 +58,14 @@ from app.web_config import (
     public_web_config,
     save_search_profile,
     save_web_config,
+)
+from app.widget_service import (
+    WidgetError,
+    notify_lead,
+    record_interest,
+    request_code,
+    verified_lead,
+    verify_code,
 )
 
 LOGGER = logging.getLogger(__name__)
@@ -104,6 +119,24 @@ class TripPlanPayload(BaseModel):
     max_points_per_route: int = Field(default=4, ge=2, le=9)
 
 
+class WidgetCodeRequest(BaseModel):
+    phone: str = Field(min_length=8, max_length=32)
+    consent: bool = False
+    source_page: str = Field(default="", max_length=2_000)
+    utm: Dict[str, Any] = Field(default_factory=dict)
+
+
+class WidgetCodeVerify(BaseModel):
+    phone: str = Field(min_length=8, max_length=32)
+    code: str = Field(min_length=4, max_length=12)
+
+
+class WidgetInterestPayload(BaseModel):
+    listing_id: int = Field(gt=0)
+    search_params: Dict[str, Any] = Field(default_factory=dict)
+    source_page: str = Field(default="", max_length=2_000)
+
+
 def create_app(settings: Optional[Settings] = None) -> FastAPI:
     base_settings = settings or load_settings()
     _ensure_sqlite_parent(base_settings.database_url)
@@ -121,11 +154,34 @@ def create_app(settings: Optional[Settings] = None) -> FastAPI:
     app = FastAPI(
         title="LandPlotFinder",
         description="Локальная панель поиска и отбора земельных участков",
-        version="1.1.0",
+        version=__version__,
         lifespan=lifespan,
     )
     app.state.settings = base_settings
     app.state.jobs = coordinator
+    app.add_middleware(
+        CORSMiddleware,
+        allow_origins=base_settings.widget_allowed_origins,
+        allow_credentials=False,
+        allow_methods=["GET", "POST", "OPTIONS"],
+        allow_headers=["Authorization", "Content-Type"],
+    )
+
+    @app.middleware("http")
+    async def protect_admin(request: Request, call_next):
+        if not base_settings.admin_password or _is_public_widget_path(request.url.path):
+            return await call_next(request)
+        credentials = _basic_credentials(request.headers.get("Authorization"))
+        if credentials and secrets.compare_digest(
+            credentials[0], base_settings.admin_username
+        ) and secrets.compare_digest(credentials[1], base_settings.admin_password):
+            return await call_next(request)
+        return PlainTextResponse(
+            "Требуется пароль администратора",
+            status_code=401,
+            headers={"WWW-Authenticate": 'Basic realm="LandPlotFinder"'},
+        )
+
     app.mount("/static", StaticFiles(directory=STATIC_DIR), name="static")
 
     @app.get("/health")
@@ -145,6 +201,213 @@ def create_app(settings: Optional[Settings] = None) -> FastAPI:
         saved = save_web_config(base_settings.database_url, incoming)
         coordinator.configure()
         return public_web_config(saved)
+
+    @app.post("/api/public/widget/auth/request-code")
+    def widget_request_code(payload: WidgetCodeRequest) -> Dict[str, Any]:
+        try:
+            with _database(base_settings) as session:
+                return request_code(
+                    session,
+                    base_settings,
+                    payload.phone,
+                    payload.consent,
+                    payload.source_page,
+                    payload.utm,
+                )
+        except WidgetError as exc:
+            raise HTTPException(status_code=exc.status_code, detail=exc.detail) from exc
+
+    @app.post("/api/public/widget/auth/verify-code")
+    def widget_verify_code(payload: WidgetCodeVerify) -> Dict[str, Any]:
+        try:
+            with _database(base_settings) as session:
+                return verify_code(session, base_settings, payload.phone, payload.code)
+        except WidgetError as exc:
+            raise HTTPException(status_code=exc.status_code, detail=exc.detail) from exc
+
+    @app.get("/api/public/widget/listings")
+    def public_widget_listings(
+        request: Request,
+        q: str = Query(default="", max_length=120),
+        max_price_usd: Optional[float] = Query(default=None, gt=0, le=10_000_000),
+        min_area_sotok: Optional[float] = Query(default=None, gt=0, le=10_000),
+        max_area_sotok: Optional[float] = Query(default=None, gt=0, le=10_000),
+        max_distance_km: Optional[float] = Query(default=None, ge=0, le=1_000),
+        electricity: bool = False,
+        gas: bool = False,
+        limit: int = Query(default=6, ge=1, le=12),
+        profile_id: Optional[str] = Query(default=None, max_length=64),
+    ) -> JSONResponse:
+        if (
+            min_area_sotok is not None
+            and max_area_sotok is not None
+            and min_area_sotok > max_area_sotok
+        ):
+            raise HTTPException(
+                status_code=422,
+                detail="Минимальная площадь не может быть больше максимальной",
+            )
+        config = load_web_config(base_settings.database_url)
+        selected_profile_id = _selected_profile_id(
+            config,
+            profile_id or base_settings.widget_profile_id,
+        )
+        profile = get_profile(config, selected_profile_id)
+        try:
+            with _database(base_settings) as session:
+                verified_lead(session, _bearer_token(request))
+                statement = (
+                    select(ListingModel, ListingProfileModel)
+                    .join(
+                        ListingProfileModel,
+                        and_(
+                            ListingProfileModel.listing_id == ListingModel.id,
+                            ListingProfileModel.profile_id == selected_profile_id,
+                        ),
+                    )
+                    .where(ListingModel.active.is_(True))
+                )
+                conditions = []
+                if q.strip():
+                    pattern = f"%{q.strip()}%"
+                    conditions.append(
+                        or_(
+                            ListingModel.title.ilike(pattern),
+                            ListingModel.locality.ilike(pattern),
+                            ListingModel.district.ilike(pattern),
+                            ListingModel.direction.ilike(pattern),
+                            ListingModel.description.ilike(pattern),
+                        )
+                    )
+                if max_price_usd is not None:
+                    conditions.extend(
+                        [
+                            ListingModel.price_usd.is_not(None),
+                            ListingModel.price_usd <= max_price_usd,
+                        ]
+                    )
+                if min_area_sotok is not None:
+                    conditions.extend(
+                        [
+                            ListingModel.area_sotok.is_not(None),
+                            ListingModel.area_sotok >= min_area_sotok,
+                        ]
+                    )
+                if max_area_sotok is not None:
+                    conditions.extend(
+                        [
+                            ListingModel.area_sotok.is_not(None),
+                            ListingModel.area_sotok <= max_area_sotok,
+                        ]
+                    )
+                if max_distance_km is not None:
+                    conditions.extend(
+                        [
+                            ListingModel.distance_mkad_km.is_not(None),
+                            ListingModel.distance_mkad_km <= max_distance_km,
+                        ]
+                    )
+                if electricity:
+                    conditions.append(
+                        or_(
+                            ListingModel.electricity_kw > 0,
+                            and_(
+                                ListingModel.electricity_raw.is_not(None),
+                                ListingModel.electricity_raw != "",
+                            ),
+                        )
+                    )
+                if gas:
+                    conditions.append(
+                        and_(
+                            ListingModel.gas_raw.is_not(None),
+                            ListingModel.gas_raw != "",
+                        )
+                    )
+                statement = statement.where(*conditions)
+                total = session.scalar(
+                    select(func.count()).select_from(statement.subquery())
+                ) or 0
+                rows = session.execute(
+                    statement.order_by(
+                        ListingProfileModel.score.desc(),
+                        ListingModel.last_seen_at.desc(),
+                    ).limit(limit)
+                ).all()
+        except WidgetError as exc:
+            raise HTTPException(status_code=exc.status_code, detail=exc.detail) from exc
+        return JSONResponse(
+            {
+                "profile": {"id": selected_profile_id, "name": profile["name"]},
+                "total": total,
+                "items": [
+                    _public_widget_listing_json(listing, match)
+                    for listing, match in rows
+                ],
+            },
+            headers={"Cache-Control": "private, max-age=60"},
+        )
+
+    @app.post("/api/public/widget/interests")
+    def widget_interest(
+        request: Request,
+        payload: WidgetInterestPayload,
+    ) -> Dict[str, Any]:
+        try:
+            with _database(base_settings) as session:
+                lead = verified_lead(session, _bearer_token(request))
+                notification = record_interest(
+                    session,
+                    lead,
+                    payload.listing_id,
+                    payload.search_params,
+                    payload.source_page,
+                )
+        except WidgetError as exc:
+            raise HTTPException(status_code=exc.status_code, detail=exc.detail) from exc
+        notify_lead(base_settings, notification)
+        return {"ok": True, "message": "Интерес сохранён"}
+
+    @app.get("/api/widget/leads")
+    def widget_leads() -> Dict[str, Any]:
+        with _database(base_settings) as session:
+            leads = session.scalars(
+                select(WidgetLeadModel)
+                .where(WidgetLeadModel.verified_at.is_not(None))
+                .order_by(WidgetLeadModel.created_at.desc())
+            ).all()
+            interests = session.scalars(
+                select(WidgetInterestModel).order_by(
+                    WidgetInterestModel.created_at.desc()
+                )
+            ).all()
+        grouped: Dict[int, List[WidgetInterestModel]] = {}
+        for interest in interests:
+            grouped.setdefault(interest.lead_id, []).append(interest)
+        return {
+            "total": len(leads),
+            "items": [
+                {
+                    "id": lead.id,
+                    "phone": lead.phone,
+                    "verified_at": _iso(lead.verified_at),
+                    "created_at": _iso(lead.created_at),
+                    "source_page": lead.source_page,
+                    "utm": lead.utm,
+                    "interests": [
+                        {
+                            "listing_id": item.listing_id,
+                            "title": item.listing_title,
+                            "url": item.listing_url,
+                            "search_params": item.search_params,
+                            "created_at": _iso(item.created_at),
+                        }
+                        for item in grouped.get(lead.id, [])
+                    ],
+                }
+                for lead in leads
+            ],
+        }
 
     @app.get("/api/profiles")
     def profiles() -> Dict[str, Any]:
@@ -726,6 +989,10 @@ def create_app(settings: Optional[Settings] = None) -> FastAPI:
         coordinator.configure()
         return {"ok": True, **restored}
 
+    @app.get("/widget-demo")
+    def widget_demo() -> FileResponse:
+        return FileResponse(STATIC_DIR / "widget-demo.html")
+
     @app.get("/")
     @app.get("/{path:path}")
     def index(request: Request, path: str = "") -> FileResponse:
@@ -806,6 +1073,30 @@ def _listing_json(
     return value
 
 
+def _public_widget_listing_json(
+    listing: ListingModel,
+    profile: ListingProfileModel,
+) -> Dict[str, Any]:
+    location = ", ".join(
+        item for item in [listing.locality, listing.district] if item
+    )
+    return {
+        "id": listing.id,
+        "source": listing.source,
+        "title": listing.title,
+        "location": location,
+        "price_usd": listing.price_usd,
+        "area_sotok": listing.area_sotok,
+        "distance_mkad_km": listing.distance_mkad_km,
+        "electricity": listing.electricity_raw,
+        "electricity_kw": listing.electricity_kw,
+        "gas": listing.gas_raw,
+        "score": profile.score,
+        "url": listing.canonical_url,
+        "last_seen_at": _iso(listing.last_seen_at),
+    }
+
+
 def _run_json(run: ScanRunModel) -> Dict[str, Any]:
     return {
         "started_at": _iso(run.started_at),
@@ -827,6 +1118,34 @@ def _selected_profile_id(config: Dict[str, Any], profile_id: Optional[str]) -> s
     except KeyError as exc:
         raise HTTPException(status_code=404, detail="Профиль поиска не найден") from exc
     return selected
+
+
+def _is_public_widget_path(path: str) -> bool:
+    return path in {
+        "/health",
+        "/widget-demo",
+        "/static/landplotfinder-widget.js",
+    } or path.startswith("/api/public/widget/")
+
+
+def _basic_credentials(value: Optional[str]) -> Optional[tuple[str, str]]:
+    if not value or not value.startswith("Basic "):
+        return None
+    try:
+        decoded = b64decode(value[6:].strip(), validate=True).decode("utf-8")
+    except (BinasciiError, UnicodeDecodeError):
+        return None
+    if ":" not in decoded:
+        return None
+    username, password = decoded.split(":", 1)
+    return username, password
+
+
+def _bearer_token(request: Request) -> str:
+    value = request.headers.get("Authorization", "")
+    if not value.startswith("Bearer "):
+        return ""
+    return value[7:].strip()
 
 
 def _trip_point(
@@ -894,7 +1213,7 @@ def main() -> None:
         "app.web:create_app",
         factory=True,
         host=os.getenv("WEB_HOST", "127.0.0.1"),
-        port=int(os.getenv("WEB_PORT", "8787")),
+        port=int(os.getenv("PORT", os.getenv("WEB_PORT", "8787"))),
     )
 
 
