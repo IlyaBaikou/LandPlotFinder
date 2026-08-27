@@ -126,8 +126,19 @@ async function openDetail(id) {
   try {
     const [listing, history] = await Promise.all([api(`/api/listings/${id}?${profileParams()}`), api(`/api/listings/${id}/history`)]);
     state.detail = listing;
-    $('#drawerContent').innerHTML = `<div class="detail-score">${listing.score}</div><p class="eyebrow">${esc(sourceNames[listing.source] || listing.source)} · ${listing.active ? 'актуально' : 'архив'}</p><h2 class="detail-title">${esc(displayTitle(listing))}</h2><p>${esc(displayPlace(listing))}</p><div class="detail-grid"><div><small>Цена</small><b>${money(listing.price_usd)}</b></div><div><small>Площадь</small><b>${number(listing.area_sotok)} сот.</b></div><div><small>Расстояние</small><b>${number(listing.distance_mkad_km)} км</b></div><div><small>Электричество</small><b>${esc(listing.electricity_kw ? `${listing.electricity_kw} кВт` : listing.electricity || '—')}</b></div><div><small>Газ</small><b>${esc(listing.gas || '—')}</b></div><div><small>Интернет</small><b>${esc(listing.internet || '—')}</b></div></div><h3>Ваше решение</h3><div class="decision-row">${Object.entries(decisions).map(([key, value]) => `<button class="${listing.decision === key ? 'active' : ''}" data-detail-decision="${key}">${value}</button>`).join('')}</div><textarea class="detail-note" id="detailNote" placeholder="Заметки об участке">${esc(presentationMode ? '' : listing.note)}</textarea><button class="button secondary full" id="saveDecision">Сохранить решение</button><a class="button primary full" href="${esc(listing.url)}" target="_blank" rel="noopener">Открыть исходную карточку ↗</a>${listing.description ? `<h3>Описание</h3><div class="detail-description">${esc(presentationMode ? 'Описание скрыто в презентационном режиме.' : listing.description)}</div>` : ''}${historyBlock(history)}`;
-    $('#detailDrawer').classList.add('open'); $('#drawerShade').classList.add('open'); $('#detailDrawer').setAttribute('aria-hidden', 'false');
+    const facts = [
+      ['Цена', money(listing.price_usd)], ['Площадь', `${number(listing.area_sotok)} сот.`],
+      ['Расстояние', `${number(listing.distance_mkad_km)} км`], ['Направление', listing.direction || '—'],
+      ['Электричество', listing.electricity_kw ? `${listing.electricity_kw} кВт` : listing.electricity || '—'],
+      ['Газ', listing.gas || '—'], ['Водоснабжение', listing.water || '—'],
+      ['Канализация', listing.sewerage || '—'], ['Назначение земли', listing.purpose || '—'],
+      ['Право на землю', listing.ownership || '—'], ['Интернет', listing.internet || '—'], ['Дорога', listing.road || '—'],
+    ];
+    const factsHtml = facts.map(([label, value]) => `<div><small>${esc(label)}</small><b>${esc(value)}</b></div>`).join('');
+    $('#drawerContent').innerHTML = `<div class="detail-score">${listing.score}</div><p class="eyebrow">${esc(sourceNames[listing.source] || listing.source)} · ${listing.active ? 'актуально' : 'архив'}</p><h2 class="detail-title">${esc(displayTitle(listing))}</h2><p>${esc(displayPlace(listing))}</p><div class="detail-grid">${factsHtml}</div><h3>Ваше решение</h3><div class="decision-row">${Object.entries(decisions).map(([key, value]) => `<button class="${listing.decision === key ? 'active' : ''}" data-detail-decision="${key}">${value}</button>`).join('')}</div><textarea class="detail-note" id="detailNote" placeholder="Заметки об участке">${esc(presentationMode ? '' : listing.note)}</textarea><button class="button secondary full" id="saveDecision">Сохранить решение</button><a class="button primary full" href="${esc(listing.url)}" target="_blank" rel="noopener">Открыть исходную карточку ↗</a>${listing.description ? `<h3>Описание</h3><div class="detail-description">${esc(presentationMode ? 'Описание скрыто в презентационном режиме.' : listing.description)}</div>` : ''}${historyBlock(history)}`;
+    const drawer = $('#detailDrawer');
+    drawer.scrollTop = 0; drawer.classList.add('open'); $('#drawerShade').classList.add('open'); drawer.setAttribute('aria-hidden', 'false');
+    document.body.classList.add('drawer-open');
   } catch (error) { toast(error.message); }
 }
 function historyBlock(history) {
@@ -148,7 +159,7 @@ function historyEvent(event) {
   else if (event.payload.reason) detail = event.payload.reason;
   return `<div class="timeline-item"><i></i><div><b>${esc(labels[event.type] || event.type)}</b>${esc(dt(event.occurred_at))}${detail ? ` · ${esc(detail)}` : ''}</div></div>`;
 }
-function closeDetail() { $('#detailDrawer').classList.remove('open'); $('#drawerShade').classList.remove('open'); $('#detailDrawer').setAttribute('aria-hidden', 'true'); }
+function closeDetail() { $('#detailDrawer').classList.remove('open'); $('#drawerShade').classList.remove('open'); $('#detailDrawer').setAttribute('aria-hidden', 'true'); document.body.classList.remove('drawer-open'); }
 async function quickDecision(id, decision) {
   try { await api(`/api/listings/${id}/decision`, { method: 'PUT', body: JSON.stringify({ state: decision, note: '' }) }); toast('Решение сохранено'); loadListings(); loadDashboard(); loadSummary(); }
   catch (error) { toast(error.message); }
@@ -322,6 +333,7 @@ $('#activityButton').onclick = () => runJob('activity'); $('#refreshHealthButton
 $('#refreshWidgetButton').onclick = loadWidgetAdmin; $('#widgetSearchInput').oninput = renderWidgetRequests;
 $('#newProfileButton').onclick = createProfile; $('#deleteProfileButton').onclick = deleteProfile; $('#profileSelect').onchange = (event) => switchProfile(event.target.value);
 $('#drawerClose').onclick = closeDetail; $('#drawerShade').onclick = closeDetail;
+document.addEventListener('keydown', (event) => { if (event.key === 'Escape' && $('#detailDrawer').classList.contains('open')) closeDetail(); });
 $('#settingsForm').onsubmit = (event) => { event.preventDefault(); saveSettings(event.currentTarget); };
 $('#setupForm').onsubmit = (event) => { event.preventDefault(); saveSetup(event.currentTarget); };
 $('#restoreButton').onclick = () => $('#restoreFile').click(); $('#restoreFile').onchange = (event) => restoreSelectedBackup(event.target.files[0]);

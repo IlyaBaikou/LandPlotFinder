@@ -8,17 +8,19 @@ import logging
 import math
 import os
 import secrets
-from base64 import b64decode
+import time
+from base64 import b64decode, urlsafe_b64decode, urlsafe_b64encode
 from binascii import Error as BinasciiError
 from contextlib import asynccontextmanager, contextmanager
 from datetime import datetime
 from pathlib import Path
 from typing import Any, Dict, List, Literal, Optional
+from urllib.parse import quote
 
 import uvicorn
 from fastapi import FastAPI, HTTPException, Query, Request, status
 from fastapi.middleware.cors import CORSMiddleware
-from fastapi.responses import FileResponse, JSONResponse, PlainTextResponse, StreamingResponse
+from fastapi.responses import FileResponse, JSONResponse, RedirectResponse, StreamingResponse
 from fastapi.staticfiles import StaticFiles
 from pydantic import BaseModel, Field
 from sqlalchemy import and_, func, or_, select
@@ -75,6 +77,8 @@ from app.widget_service import (
 LOGGER = logging.getLogger(__name__)
 STATIC_DIR = Path(__file__).with_name("static")
 DECISION_STATES = {"new", "liked", "studying", "trip", "rejected"}
+ADMIN_SESSION_COOKIE = "lpf_admin_session"
+ADMIN_SESSION_TTL_SECONDS = 7 * 24 * 60 * 60
 
 
 class DecisionPayload(BaseModel):
@@ -145,6 +149,11 @@ class WidgetStatusPayload(BaseModel):
     references: List[str] = Field(min_length=1, max_length=50)
 
 
+class AdminLoginPayload(BaseModel):
+    username: str = Field(min_length=1, max_length=200)
+    password: str = Field(min_length=1, max_length=1_000)
+
+
 def create_app(settings: Optional[Settings] = None) -> FastAPI:
     base_settings = settings or load_settings()
     _ensure_sqlite_parent(base_settings.database_url)
@@ -180,23 +189,61 @@ def create_app(settings: Optional[Settings] = None) -> FastAPI:
         if not base_settings.admin_password or _is_public_widget_path(request.url.path):
             return await call_next(request)
         credentials = _basic_credentials(request.headers.get("Authorization"))
-        if (
+        basic_valid = (
             credentials
             and secrets.compare_digest(credentials[0], base_settings.admin_username)
             and secrets.compare_digest(credentials[1], base_settings.admin_password)
-        ):
-            return await call_next(request)
-        return PlainTextResponse(
-            "Требуется пароль администратора",
-            status_code=401,
-            headers={"WWW-Authenticate": 'Basic realm="LandPlotFinder"'},
         )
+        cookie_valid = _valid_admin_session(
+            request.cookies.get(ADMIN_SESSION_COOKIE),
+            base_settings,
+        )
+        if basic_valid or cookie_valid:
+            return await call_next(request)
+        if request.url.path.startswith("/api/"):
+            return JSONResponse(
+                {"detail": "Требуется вход администратора"},
+                status_code=401,
+                headers={"WWW-Authenticate": 'Basic realm="LandPlotFinder"'},
+            )
+        next_path = request.url.path
+        if request.url.query:
+            next_path = f"{next_path}?{request.url.query}"
+        return RedirectResponse(url=f"/login?next={quote(next_path, safe='')}", status_code=303)
 
     app.mount("/static", StaticFiles(directory=STATIC_DIR), name="static")
 
     @app.get("/health")
     def health() -> Dict[str, Any]:
         return {"ok": True, "service": "land-plot-finder"}
+
+    @app.post("/api/auth/login")
+    def admin_login(payload: AdminLoginPayload, request: Request) -> JSONResponse:
+        valid = bool(base_settings.admin_password) and secrets.compare_digest(
+            payload.username,
+            base_settings.admin_username,
+        ) and secrets.compare_digest(payload.password, base_settings.admin_password or "")
+        if not valid:
+            raise HTTPException(status_code=401, detail="Неверный логин или пароль")
+        response = JSONResponse({"ok": True})
+        response.set_cookie(
+            ADMIN_SESSION_COOKIE,
+            _admin_session_token(base_settings),
+            max_age=ADMIN_SESSION_TTL_SECONDS,
+            httponly=True,
+            secure=request.url.scheme == "https",
+            samesite="lax",
+            path="/",
+        )
+        response.headers["Cache-Control"] = "no-store"
+        return response
+
+    @app.post("/api/auth/logout")
+    def admin_logout() -> JSONResponse:
+        response = JSONResponse({"ok": True})
+        response.delete_cookie(ADMIN_SESSION_COOKIE, path="/")
+        response.headers["Cache-Control"] = "no-store"
+        return response
 
     @app.get("/api/settings")
     def get_settings() -> Dict[str, Any]:
@@ -259,6 +306,8 @@ def create_app(settings: Optional[Settings] = None) -> FastAPI:
         max_distance_km: Optional[float] = Query(default=None, ge=0, le=1_000),
         electricity: bool = False,
         gas: bool = False,
+        water: bool = False,
+        sewerage: bool = False,
         profile_id: Optional[str] = Query(default=None, max_length=64),
     ) -> JSONResponse:
         _validate_widget_area(min_area_sotok, max_area_sotok)
@@ -276,6 +325,8 @@ def create_app(settings: Optional[Settings] = None) -> FastAPI:
             max_distance_km,
             electricity,
             gas,
+            water,
+            sewerage,
         )
         with _database(base_settings) as session:
             total = session.scalar(select(func.count()).select_from(statement.subquery())) or 0
@@ -294,6 +345,8 @@ def create_app(settings: Optional[Settings] = None) -> FastAPI:
         max_distance_km: Optional[float] = Query(default=None, ge=0, le=1_000),
         electricity: bool = False,
         gas: bool = False,
+        water: bool = False,
+        sewerage: bool = False,
         limit: int = Query(default=9, ge=1, le=24),
         offset: int = Query(default=0, ge=0, le=10_000),
         sort: Literal["match", "price", "distance", "newest"] = "match",
@@ -318,6 +371,8 @@ def create_app(settings: Optional[Settings] = None) -> FastAPI:
                     max_distance_km,
                     electricity,
                     gas,
+                    water,
+                    sewerage,
                 )
                 rows = session.execute(statement).all()
                 location_keys = {
@@ -351,6 +406,8 @@ def create_app(settings: Optional[Settings] = None) -> FastAPI:
                 max_distance_km=max_distance_km,
                 electricity_required=electricity,
                 gas_required=gas,
+                water_required=water,
+                sewerage_required=sewerage,
             )
             for listing, _ in rows
         ]
@@ -369,6 +426,42 @@ def create_app(settings: Optional[Settings] = None) -> FastAPI:
                 "items": items[offset : offset + limit],
             },
             headers={"Cache-Control": "private, max-age=60"},
+        )
+
+    @app.get("/api/public/widget/options")
+    def public_widget_options(
+        profile_id: Optional[str] = Query(default=None, max_length=64),
+    ) -> JSONResponse:
+        config = load_web_config(base_settings.database_url)
+        selected_profile_id = _selected_profile_id(
+            config,
+            profile_id or base_settings.widget_profile_id,
+        )
+        with _database(base_settings) as session:
+            directions = session.scalars(
+                select(ListingModel.direction)
+                .join(
+                    ListingProfileModel,
+                    and_(
+                        ListingProfileModel.listing_id == ListingModel.id,
+                        ListingProfileModel.profile_id == selected_profile_id,
+                    ),
+                )
+                .where(
+                    ListingModel.active.is_(True),
+                    ListingModel.direction.is_not(None),
+                    ListingModel.direction != "",
+                )
+                .distinct()
+                .order_by(ListingModel.direction)
+            ).all()
+        cleaned = sorted(
+            {" ".join(str(value).split()) for value in directions if str(value).strip()},
+            key=str.casefold,
+        )
+        return JSONResponse(
+            {"directions": cleaned},
+            headers={"Cache-Control": "public, max-age=300"},
         )
 
     @app.post("/api/public/widget/statuses")
@@ -1080,6 +1173,13 @@ def create_app(settings: Optional[Settings] = None) -> FastAPI:
     def widget_demo() -> FileResponse:
         return FileResponse(STATIC_DIR / "widget-demo.html")
 
+    @app.get("/login")
+    def login_page() -> FileResponse:
+        return FileResponse(
+            STATIC_DIR / "login.html",
+            headers={"Cache-Control": "no-store, max-age=0"},
+        )
+
     @app.get("/sw.js")
     def retire_service_worker() -> FileResponse:
         return FileResponse(
@@ -1181,6 +1281,8 @@ def _public_widget_listing_json(
     max_distance_km: Optional[float],
     electricity_required: bool,
     gas_required: bool,
+    water_required: bool,
+    sewerage_required: bool,
 ) -> Dict[str, Any]:
     location = _public_location(listing)
     score, match_reasons, warnings = _personal_match_score(
@@ -1192,6 +1294,8 @@ def _public_widget_listing_json(
         max_distance_km=max_distance_km,
         electricity_required=electricity_required,
         gas_required=gas_required,
+        water_required=water_required,
+        sewerage_required=sewerage_required,
     )
     latitude = round(listing.latitude, 2) if listing.latitude is not None else None
     longitude = round(listing.longitude, 2) if listing.longitude is not None else None
@@ -1199,6 +1303,7 @@ def _public_widget_listing_json(
         "reference": _public_listing_ref(public_secret, listing.id),
         "title": _public_listing_title(listing),
         "location": location,
+        "direction": listing.direction,
         "price_usd": listing.price_usd,
         "area_sotok": listing.area_sotok,
         "distance_mkad_km": listing.distance_mkad_km,
@@ -1306,6 +1411,8 @@ def _personal_match_score(
     max_distance_km: Optional[float],
     electricity_required: bool,
     gas_required: bool,
+    water_required: bool,
+    sewerage_required: bool,
 ) -> tuple[int, List[str], List[str]]:
     reasons: List[str] = []
     warnings: List[str] = []
@@ -1349,24 +1456,26 @@ def _personal_match_score(
         reasons.append("Электричество упоминается")
     elif electricity_required:
         warnings.append("Электричество не подтверждено")
-    if listing.gas_raw:
+    if _utility_present(listing.gas_raw, "gas"):
         utility_points += 4.0
         reasons.append("Есть сведения о газе")
     elif gas_required:
         warnings.append("Газ не подтверждён")
-    utility_points += min(
-        4.0,
-        sum(
-            1.0
-            for value in (
-                listing.water_raw,
-                listing.sewerage_raw,
-                listing.internet_raw,
-                listing.road_raw,
-            )
-            if value
-        ),
-    )
+    if _utility_present(listing.water_raw, "water"):
+        utility_points += 2.0 if water_required else 1.0
+        if water_required:
+            reasons.append("Есть сведения о водоснабжении")
+    elif water_required:
+        warnings.append("Водоснабжение не подтверждено")
+    if _utility_present(listing.sewerage_raw, "sewerage"):
+        utility_points += 2.0 if sewerage_required else 1.0
+        if sewerage_required:
+            reasons.append("Есть сведения о канализации")
+    elif sewerage_required:
+        warnings.append("Канализация не подтверждена")
+    utility_points += float(_utility_present(listing.internet_raw, "internet"))
+    utility_points += float(_utility_present(listing.road_raw, "road"))
+    utility_points = min(15.0, utility_points)
 
     location_points = (location.score / 100 * 10.0) if location else 5.0
     if location:
@@ -1396,6 +1505,8 @@ def _utility_label(value: Optional[str], kind: str) -> Optional[str]:
     if not value:
         return None
     text = value.lower()
+    if not _utility_present(value, kind):
+        return "Нет"
     patterns = {
         "gas": (("по улице", "По улице"), ("на участке", "На участке")),
         "water": (
@@ -1425,6 +1536,22 @@ def _utility_label(value: Optional[str], kind: str) -> Optional[str]:
     return "Есть сведения"
 
 
+def _utility_present(value: Optional[str], kind: str) -> bool:
+    text = " ".join((value or "").lower().split())
+    if not text:
+        return False
+    absent_patterns = {
+        "gas": ("газа нет", "без газа", "газ отсутств"),
+        "water": ("воды нет", "без воды", "водоснабжение отсутств"),
+        "sewerage": ("канализации нет", "без канализации", "канализация отсутств"),
+        "internet": ("интернета нет", "без интернета", "интернет отсутств"),
+        "road": ("дороги нет", "без дороги", "дорога отсутств"),
+    }
+    if text == "нет":
+        return False
+    return not any(marker in text for marker in absent_patterns.get(kind, ()))
+
+
 def _ownership_label(value: Optional[str]) -> Optional[str]:
     text = (value or "").lower()
     if "частн" in text and "собствен" in text:
@@ -1433,16 +1560,20 @@ def _ownership_label(value: Optional[str]) -> Optional[str]:
         return "Пожизненное наследуемое владение"
     if "аренд" in text:
         return "Аренда"
-    return "Указана в объявлении" if text else None
+    cleaned = " ".join((value or "").split())
+    return cleaned[:120] if cleaned else None
 
 
 def _purpose_label(value: Optional[str]) -> Optional[str]:
     text = (value or "").lower()
+    if "лпх" in text or "личн" in text and "подсоб" in text:
+        return "Личное подсобное хозяйство (ЛПХ)"
     if any(marker in text for marker in ("жилого дома", "строительств")):
         return "Для строительства жилого дома"
     if any(marker in text for marker in ("садовод", "дач")):
         return "Садоводство"
-    return "Назначение указано" if text else None
+    cleaned = " ".join((value or "").split())
+    return cleaned[:120] if cleaned else None
 
 
 def _widget_sort_key(item: Dict[str, Any], sort: str) -> tuple:
@@ -1505,6 +1636,8 @@ def _widget_listing_statement(
     max_distance_km: Optional[float],
     electricity: bool,
     gas: bool,
+    water: bool,
+    sewerage: bool,
 ):
     statement = (
         select(ListingModel, ListingProfileModel)
@@ -1570,6 +1703,29 @@ def _widget_listing_statement(
             and_(
                 ListingModel.gas_raw.is_not(None),
                 ListingModel.gas_raw != "",
+                ~ListingModel.gas_raw.ilike("%газа нет%"),
+                ~ListingModel.gas_raw.ilike("%без газа%"),
+                func.lower(ListingModel.gas_raw) != "нет",
+            )
+        )
+    if water:
+        conditions.append(
+            and_(
+                ListingModel.water_raw.is_not(None),
+                ListingModel.water_raw != "",
+                ~ListingModel.water_raw.ilike("%воды нет%"),
+                ~ListingModel.water_raw.ilike("%без воды%"),
+                func.lower(ListingModel.water_raw) != "нет",
+            )
+        )
+    if sewerage:
+        conditions.append(
+            and_(
+                ListingModel.sewerage_raw.is_not(None),
+                ListingModel.sewerage_raw != "",
+                ~ListingModel.sewerage_raw.ilike("%канализации нет%"),
+                ~ListingModel.sewerage_raw.ilike("%без канализации%"),
+                func.lower(ListingModel.sewerage_raw) != "нет",
             )
         )
     return statement.where(*conditions)
@@ -1578,10 +1734,49 @@ def _widget_listing_statement(
 def _is_public_widget_path(path: str) -> bool:
     return path in {
         "/health",
+        "/login",
         "/sw.js",
         "/widget-demo",
-        "/static/landplotfinder-widget.js",
-    } or path.startswith("/api/public/widget/")
+        "/api/auth/login",
+        "/api/auth/logout",
+    } or path.startswith(("/api/public/widget/", "/static/"))
+
+
+def _admin_session_secret(settings: Settings) -> bytes:
+    return f"{settings.admin_password or ''}\0{settings.widget_auth_secret}".encode("utf-8")
+
+
+def _admin_session_token(settings: Settings) -> str:
+    expires_at = int(time.time()) + ADMIN_SESSION_TTL_SECONDS
+    payload = f"{settings.admin_username}:{expires_at}".encode("utf-8")
+    encoded = urlsafe_b64encode(payload).decode("ascii").rstrip("=")
+    signature = hmac.new(
+        _admin_session_secret(settings),
+        encoded.encode("ascii"),
+        hashlib.sha256,
+    ).hexdigest()
+    return f"{encoded}.{signature}"
+
+
+def _valid_admin_session(value: Optional[str], settings: Settings) -> bool:
+    if not value or not settings.admin_password or "." not in value:
+        return False
+    encoded, signature = value.rsplit(".", 1)
+    expected = hmac.new(
+        _admin_session_secret(settings),
+        encoded.encode("ascii"),
+        hashlib.sha256,
+    ).hexdigest()
+    if not secrets.compare_digest(signature, expected):
+        return False
+    try:
+        padding = "=" * (-len(encoded) % 4)
+        username, expires_at = urlsafe_b64decode(encoded + padding).decode("utf-8").rsplit(":", 1)
+        return secrets.compare_digest(username, settings.admin_username) and int(expires_at) > int(
+            time.time()
+        )
+    except (ValueError, UnicodeDecodeError, BinasciiError):
+        return False
 
 
 def _basic_credentials(value: Optional[str]) -> Optional[tuple[str, str]]:

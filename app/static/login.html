@@ -1,0 +1,57 @@
+<!doctype html>
+<html lang="ru">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1, viewport-fit=cover">
+  <meta name="robots" content="noindex,nofollow">
+  <title>Вход · LandPlotFinder</title>
+  <style>
+    :root{font-family:Inter,ui-sans-serif,-apple-system,BlinkMacSystemFont,"Segoe UI",sans-serif;color:#18231d;background:#f5f1e8}
+    *{box-sizing:border-box}body{margin:0;min-width:320px;min-height:100dvh;display:grid;place-items:center;padding:24px;background:radial-gradient(circle at 15% 10%,#fffefa 0,transparent 38%),#f5f1e8}
+    main{width:min(440px,100%);background:#fffefa;border:1px solid #d9d7ce;border-radius:24px;padding:32px;box-shadow:0 22px 60px rgba(33,45,37,.12)}
+    .mark{width:52px;height:52px;display:grid;place-items:center;border-radius:16px;background:#e8d9bb;color:#31473a;font-size:29px;margin-bottom:24px}
+    .eyebrow{margin:0;color:#9a6b37;font-weight:800;text-transform:uppercase;letter-spacing:1.7px;font-size:10px}
+    h1{font:500 34px/1.1 Georgia,serif;margin:7px 0 10px}p{color:#727970;line-height:1.5;margin:0 0 24px}
+    form{display:grid;gap:15px}label{display:grid;gap:7px;font-size:12px;font-weight:750}input{width:100%;height:48px;border:1px solid #d9d7ce;border-radius:11px;background:#fff;padding:0 13px;font:inherit;font-size:16px;outline:none}input:focus{border-color:#496354;box-shadow:0 0 0 3px rgba(73,99,84,.13)}
+    button{height:48px;border:0;border-radius:11px;background:#31473a;color:#fff;font:inherit;font-weight:800;cursor:pointer}button:disabled{opacity:.65;cursor:wait}
+    #message{min-height:20px;margin:0;color:#a54f42;font-size:13px}.hint{display:block;text-align:center;color:#8b918b;font-size:11px;margin-top:18px}
+    @media(max-width:480px){body{padding:14px}main{padding:26px 20px;border-radius:20px}h1{font-size:30px}}
+  </style>
+</head>
+<body>
+  <main>
+    <div class="mark">⌂</div>
+    <p class="eyebrow">Панель управления</p>
+    <h1>Вход в LandPlotFinder</h1>
+    <p>Введите данные администратора, заданные при развёртывании сервиса.</p>
+    <form id="login-form">
+      <label>Логин<input name="username" autocomplete="username" value="admin" required></label>
+      <label>Пароль<input name="password" type="password" autocomplete="current-password" required></label>
+      <p id="message" role="alert" aria-live="polite"></p>
+      <button type="submit">Войти в админку</button>
+    </form>
+    <small class="hint">Сессия хранится только в защищённой cookie этого браузера.</small>
+  </main>
+  <script>
+    const form = document.getElementById('login-form');
+    const message = document.getElementById('message');
+    form.addEventListener('submit', async (event) => {
+      event.preventDefault();
+      const button = form.querySelector('button');
+      button.disabled = true; button.textContent = 'Проверяем…'; message.textContent = '';
+      try {
+        const data = Object.fromEntries(new FormData(form));
+        const response = await fetch('/api/auth/login', { method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify(data) });
+        const payload = await response.json().catch(() => ({}));
+        if (!response.ok) throw new Error(payload.detail || 'Не удалось войти');
+        const requested = new URLSearchParams(location.search).get('next') || '/';
+        const next = requested.startsWith('/') && !requested.startsWith('//') ? requested : '/';
+        location.replace(next);
+      } catch (error) {
+        message.textContent = error.message; button.disabled = false; button.textContent = 'Войти в админку';
+        form.elements.password.focus(); form.elements.password.select();
+      }
+    });
+  </script>
+</body>
+</html>

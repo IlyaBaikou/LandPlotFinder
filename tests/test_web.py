@@ -33,6 +33,7 @@ def _seed_listing(settings) -> int:
             description="Электричество 20 кВт, газ по улице",
             locality="Новосёлки",
             district="Минский район",
+            direction="Логойское",
             price_usd=20_000,
             area_sotok=10,
             distance_mkad_km=22,
@@ -41,6 +42,10 @@ def _seed_listing(settings) -> int:
             electricity_raw="20 кВт на участке",
             electricity_kw=20,
             gas_raw="по улице",
+            water_raw="центральный водопровод",
+            sewerage_raw="септик",
+            purpose="для ведения личного подсобного хозяйства (ЛПХ)",
+            ownership_raw="частная собственность",
             status="MATCH",
             score=91,
             content_hash="hash",
@@ -213,6 +218,9 @@ def test_public_widget_phone_search_and_interest(tmp_path) -> None:
         assert preview.status_code == 200
         assert preview.json() == {"total": 1, "preview_cards": 1}
         assert "items" not in preview.json()
+        assert client.get("/api/public/widget/options").json() == {
+            "directions": ["Логойское"]
+        }
         assert (
             client.get(
                 "/api/public/widget/preview",
@@ -259,6 +267,8 @@ def test_public_widget_phone_search_and_interest(tmp_path) -> None:
                 "max_distance_km": 30,
                 "electricity": True,
                 "gas": True,
+                "water": True,
+                "sewerage": True,
             },
         )
         assert catalog.status_code == 200
@@ -267,6 +277,11 @@ def test_public_widget_phone_search_and_interest(tmp_path) -> None:
         assert public_item["reference"].startswith("LP-")
         assert public_item["title"] == "Участок 10 сот. в районе Новосёлки"
         assert public_item["electricity"] == "20 кВт"
+        assert public_item["water"] == "Центральная"
+        assert public_item["sewerage"] == "Септик"
+        assert public_item["direction"] == "Логойское"
+        assert public_item["purpose"] == "Личное подсобное хозяйство (ЛПХ)"
+        assert public_item["ownership"] == "Частная собственность"
         assert public_item["location_score"] == 76
         assert public_item["latitude"] == 53.95
         assert public_item["longitude"] == 27.56
@@ -311,6 +326,8 @@ def test_public_widget_phone_search_and_interest(tmp_path) -> None:
                 "max_distance_km": 30,
                 "electricity": True,
                 "gas": True,
+                "water": True,
+                "sewerage": True,
             },
         ).json()["items"][0]
         assert broader_budget["match_score"] > public_item["match_score"]
@@ -372,7 +389,24 @@ def test_admin_password_does_not_block_public_widget(tmp_path) -> None:
     settings = replace(_settings(tmp_path), admin_password="very-secret")
 
     with TestClient(create_app(settings)) as client:
-        assert client.get("/").status_code == 401
+        blocked = client.get("/", follow_redirects=False)
+        assert blocked.status_code == 303
+        assert blocked.headers["location"].startswith("/login?next=")
+        assert client.get("/api/widget/leads").status_code == 401
+        assert client.get("/login").status_code == 200
+        failed_login = client.post(
+            "/api/auth/login",
+            json={"username": "admin", "password": "wrong"},
+        )
+        assert failed_login.status_code == 401
+        logged_in = client.post(
+            "/api/auth/login",
+            json={"username": "admin", "password": "very-secret"},
+        )
+        assert logged_in.status_code == 200
+        assert logged_in.cookies.get("lpf_admin_session")
+        assert client.get("/").status_code == 200
+        assert client.post("/api/auth/logout").status_code == 200
         assert client.get("/api/widget/leads").status_code == 401
         widget_demo = client.get("/widget-demo")
         assert widget_demo.status_code == 200
