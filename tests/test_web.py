@@ -4,7 +4,7 @@ from fastapi.testclient import TestClient
 
 from app.config import load_settings
 from app.db import init_db, make_engine, make_session_factory, session_scope
-from app.models import ListingModel
+from app.models import ListingModel, LocationProfileModel
 from app.web import create_app
 from app.web_config import save_web_config
 
@@ -36,17 +36,37 @@ def _seed_listing(settings) -> int:
             price_usd=20_000,
             area_sotok=10,
             distance_mkad_km=22,
-            latitude=53.95,
-            longitude=27.56,
+            latitude=53.954321,
+            longitude=27.564321,
             electricity_raw="20 кВт на участке",
             electricity_kw=20,
             gas_raw="по улице",
             status="MATCH",
             score=91,
             content_hash="hash",
+            raw_payload={"location_key": "village:novoselki"},
         )
         session.add(listing)
         session.flush()
+        session.add(
+            LocationProfileModel(
+                key="village:novoselki",
+                label="Новосёлки",
+                kind="village",
+                district="Минский район",
+                latitude=53.95,
+                longitude=27.56,
+                listing_count=8,
+                eligible_count=4,
+                house_count=5,
+                premium_house_count=2,
+                score=76,
+                verdict="Перспективная жилая локация",
+                confidence="medium",
+                signals=["Есть современная коттеджная застройка"],
+                risks=["Не все коммуникации подтверждены"],
+            )
+        )
         listing_id = listing.id
     engine.dispose()
     return listing_id
@@ -173,6 +193,13 @@ def test_public_widget_phone_search_and_interest(tmp_path) -> None:
 
     with TestClient(create_app(settings)) as client:
         assert client.get("/api/public/widget/listings").status_code == 401
+        assert (
+            client.post(
+                "/api/public/widget/statuses",
+                json={"references": ["LP-0000000000"]},
+            ).status_code
+            == 401
+        )
         preview = client.get(
             "/api/public/widget/preview",
             params={
@@ -186,6 +213,13 @@ def test_public_widget_phone_search_and_interest(tmp_path) -> None:
         assert preview.status_code == 200
         assert preview.json() == {"total": 1, "preview_cards": 1}
         assert "items" not in preview.json()
+        assert (
+            client.get(
+                "/api/public/widget/preview",
+                params={"q": "Участок в Новосёлках"},
+            ).json()["total"]
+            == 0
+        )
 
         requested = client.post(
             "/api/public/widget/auth/request-code",
@@ -229,28 +263,108 @@ def test_public_widget_phone_search_and_interest(tmp_path) -> None:
         )
         assert catalog.status_code == 200
         assert catalog.json()["total"] == 1
-        assert catalog.json()["items"][0]["id"] == listing_id
-        assert catalog.json()["items"][0]["electricity_kw"] == 20
+        public_item = catalog.json()["items"][0]
+        assert public_item["reference"].startswith("LP-")
+        assert public_item["title"] == "Участок 10 сот. в районе Новосёлки"
+        assert public_item["electricity"] == "20 кВт"
+        assert public_item["location_score"] == 76
+        assert public_item["latitude"] == 53.95
+        assert public_item["longitude"] == 27.56
+        assert public_item["coordinates_approximate"] is True
+        assert 0 < public_item["match_score"] <= 100
+        assert {
+            "id",
+            "source",
+            "url",
+            "description",
+            "original_score",
+        }.isdisjoint(public_item)
+
+        statuses = client.post(
+            "/api/public/widget/statuses",
+            headers=headers,
+            json={"references": [public_item["reference"], "LP-0000000000"]},
+        )
+        assert statuses.status_code == 200
+        assert statuses.json()["items"][0]["reference"] == public_item["reference"]
+        assert statuses.json()["items"][0]["active"] is True
+        assert statuses.json()["items"][0]["last_seen_at"]
+        assert statuses.json()["items"][1] == {
+            "reference": "LP-0000000000",
+            "active": False,
+            "last_seen_at": None,
+        }
+
+        admin_item = client.get("/api/listings").json()["items"][0]
+        assert admin_item["public_ref"] == public_item["reference"]
+        assert admin_item["title"] == "Участок в Новосёлках"
+        assert admin_item["url"] == "https://re.kufar.by/vi/42"
+
+        broader_budget = client.get(
+            "/api/public/widget/listings",
+            headers=headers,
+            params={
+                "q": "Новосёлки",
+                "max_price_usd": 40_000,
+                "min_area_sotok": 9,
+                "max_area_sotok": 11,
+                "max_distance_km": 30,
+                "electricity": True,
+                "gas": True,
+            },
+        ).json()["items"][0]
+        assert broader_budget["match_score"] > public_item["match_score"]
 
         interest = client.post(
             "/api/public/widget/interests",
             headers=headers,
             json={
-                "listing_id": listing_id,
-                "name": "Илья",
+                "reference": public_item["reference"],
                 "search_params": {"max_price_usd": "25000"},
                 "source_page": "https://example.tilda.ws/plots",
             },
         )
         assert interest.status_code == 200
+        assert interest.json()["message"] == "Запрос передан специалисту"
+
+        missing_interest = client.post(
+            "/api/public/widget/interests",
+            headers=headers,
+            json={"reference": "LP-0000000000"},
+        )
+        assert missing_interest.status_code == 404
 
         leads = client.get("/api/widget/leads").json()
         assert leads["total"] == 1
+        assert leads["requests_total"] == 1
         assert leads["items"][0]["phone"] == "+375291234567"
         assert leads["items"][0]["interests"][0]["listing_id"] == listing_id
+        assert leads["items"][0]["interests"][0]["reference"] == public_item["reference"]
+
+        engine = make_engine(settings.database_url)
+        factory = make_session_factory(engine)
+        with session_scope(factory) as session:
+            session.get(ListingModel, listing_id).active = False
+        engine.dispose()
+
+        archived_status = client.post(
+            "/api/public/widget/statuses",
+            headers=headers,
+            json={"references": [public_item["reference"]]},
+        )
+        assert archived_status.status_code == 200
+        assert archived_status.json()["items"][0]["active"] is False
         assert (
-            leads["items"][0]["interests"][0]["search_params"]["contact_name"]
-            == "Илья"
+            client.post(
+                "/api/public/widget/interests",
+                headers=headers,
+                json={"reference": public_item["reference"]},
+            ).status_code
+            == 404
+        )
+        assert (
+            leads["items"][0]["interests"][0]["search_params"]["request_type"]
+            == "listing_consultation"
         )
 
 
@@ -260,7 +374,15 @@ def test_admin_password_does_not_block_public_widget(tmp_path) -> None:
     with TestClient(create_app(settings)) as client:
         assert client.get("/").status_code == 401
         assert client.get("/api/widget/leads").status_code == 401
-        assert client.get("/widget-demo").status_code == 200
-        assert client.get("/static/landplotfinder-widget.js").status_code == 200
+        widget_demo = client.get("/widget-demo")
+        assert widget_demo.status_code == 200
+        assert "ВАША КОМПАНИЯ" in widget_demo.text
+        assert "ЛИДЕР СТРОЙ" not in widget_demo.text
+        widget_script = client.get("/static/landplotfinder-widget.js")
+        assert widget_script.status_code == 200
+        assert 'company: script.dataset.companyName || "ВАША КОМПАНИЯ"' in widget_script.text
+        service_worker = client.get("/sw.js")
+        assert service_worker.status_code == 200
+        assert service_worker.headers["cache-control"] == "no-store, max-age=0"
         assert client.get("/health").status_code == 200
         assert client.get("/", auth=("admin", "very-secret")).status_code == 200

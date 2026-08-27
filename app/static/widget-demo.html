@@ -3,7 +3,7 @@
 <head>
   <meta charset="utf-8">
   <meta name="viewport" content="width=device-width,initial-scale=1">
-  <title>Подбор участка — Лидер Строй</title>
+  <title>Подбор участка — демонстрационная строительная компания</title>
   <style>
     :root{--yellow:#ffb434;--black:#171717;--paper:#f2f2ef}
     *{box-sizing:border-box}html{scroll-behavior:smooth}body{margin:0;background:var(--paper);color:var(--black);font-family:Inter,Arial,sans-serif}
@@ -17,16 +17,16 @@
 </head>
 <body>
   <nav class="demo-nav">
-    <div class="logo"><span class="logo-mark" aria-hidden="true"></span><span>ЛИДЕР СТРОЙ<small>СТРОИТЕЛЬНАЯ ОРГАНИЗАЦИЯ</small></span></div>
-    <div class="nav-right"><span class="nav-phone">+375 (33) 377-75-76</span><a class="nav-button" href="#widget">Заказать звонок ↗</a></div>
+    <div class="logo"><span class="logo-mark" aria-hidden="true"></span><span>ВАША КОМПАНИЯ<small>СТРОИТЕЛЬСТВО ДОМОВ</small></span></div>
+    <div class="nav-right"><span class="nav-phone">+375 (00) 000-00-00</span><a class="nav-button" href="#widget">Заказать звонок ↗</a></div>
   </nav>
   <main>
     <section class="hero">
       <div class="hero-inner">
         <div>
           <h1>Дом начинается <span>с правильного участка</span></h1>
-          <p class="hero-copy">Подберите землю под строительство, оцените основные параметры и передайте понравившийся вариант нашим специалистам.</p>
-          <div class="hero-pills"><a class="primary" href="#widget">Подобрать участок</a><a href="https://lider-stroy.by/katalog_proektov">Каталог проектов ↗</a></div>
+          <p class="hero-copy">Подберите землю под строительство, изучите локацию, сохраните варианты и сравните их перед поездкой.</p>
+          <div class="hero-pills"><a class="primary" href="#widget">Подобрать участок</a><a href="#projects">Каталог проектов ↗</a></div>
         </div>
         <div class="hero-cards">
           <div class="hero-card"><strong>Проверенные варианты</strong><span>Каталог обновляется автоматически несколько раз в день</span></div>
@@ -37,17 +37,18 @@
     <div class="quick-nav"><div class="quick-inner"><span>Готовые решения</span><span>Проектирование</span><span>Строительство</span><span>Подбор участка ↗</span></div></div>
     <section class="widget-section" id="widget">
       <div class="section-head">
-        <div><span class="eyebrow">Новый сервис Лидер Строй</span><h2>Найдите место <span>для будущего дома</span></h2></div>
-        <p>Задайте бюджет, площадь и расстояние. Поиск идёт по уже собранной базе — сайты объявлений не получают отдельный запрос от каждого посетителя.</p>
+        <div><span class="eyebrow">Сервис строительной компании</span><h2>Найдите место <span>для будущего дома</span></h2></div>
+        <p>Задайте бюджет, площадь и расстояние. Получите обезличенную подборку с оценкой локации, картой и сравнением вариантов.</p>
       </div>
       <div class="widget-wrap"><div id="landplotfinder-widget"></div></div>
-      <script src="/static/landplotfinder-widget.js"
+      <script src="/static/landplotfinder-widget.js?v=20260827-anon"
               data-target="landplotfinder-widget"
-              data-company-name="ЛИДЕР СТРОЙ"
+              data-company-name="ВАША КОМПАНИЯ"
               data-accent="#ffb434"
-              data-privacy-url="https://lider-stroy.by/politika_konfidencialnosti"></script>
+              data-map-provider="yandex"
+              data-privacy-url="#privacy"></script>
     </section>
   </main>
-  <footer class="demo-footer">ЛИДЕР СТРОЙ × LandPlotFinder · презентация сервиса подбора участка</footer>
+  <footer class="demo-footer">ДЕМОНСТРАЦИОННАЯ КОМПАНИЯ × LandPlotFinder · презентация сервиса подбора участка</footer>
 </body>
 </html>

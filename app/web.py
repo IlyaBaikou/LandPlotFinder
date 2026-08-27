@@ -1,6 +1,8 @@
 from __future__ import annotations
 
 import csv
+import hashlib
+import hmac
 import io
 import logging
 import math
@@ -20,6 +22,7 @@ from fastapi.responses import FileResponse, JSONResponse, PlainTextResponse, Str
 from fastapi.staticfiles import StaticFiles
 from pydantic import BaseModel, Field
 from sqlalchemy import and_, func, or_, select
+from sqlalchemy.orm import Session
 from starlette.background import BackgroundTask
 
 from app import __version__
@@ -46,6 +49,7 @@ from app.models import (
     ListingModel,
     ListingProfileModel,
     ListingSnapshotModel,
+    LocationProfileModel,
     ScanRunModel,
     WidgetInterestModel,
     WidgetLeadModel,
@@ -132,10 +136,13 @@ class WidgetCodeVerify(BaseModel):
 
 
 class WidgetInterestPayload(BaseModel):
-    listing_id: int = Field(gt=0)
-    name: str = Field(default="", max_length=80)
+    reference: str = Field(min_length=13, max_length=13)
     search_params: Dict[str, Any] = Field(default_factory=dict)
     source_page: str = Field(default="", max_length=2_000)
+
+
+class WidgetStatusPayload(BaseModel):
+    references: List[str] = Field(min_length=1, max_length=50)
 
 
 def create_app(settings: Optional[Settings] = None) -> FastAPI:
@@ -173,9 +180,11 @@ def create_app(settings: Optional[Settings] = None) -> FastAPI:
         if not base_settings.admin_password or _is_public_widget_path(request.url.path):
             return await call_next(request)
         credentials = _basic_credentials(request.headers.get("Authorization"))
-        if credentials and secrets.compare_digest(
-            credentials[0], base_settings.admin_username
-        ) and secrets.compare_digest(credentials[1], base_settings.admin_password):
+        if (
+            credentials
+            and secrets.compare_digest(credentials[0], base_settings.admin_username)
+            and secrets.compare_digest(credentials[1], base_settings.admin_password)
+        ):
             return await call_next(request)
         return PlainTextResponse(
             "Требуется пароль администратора",
@@ -269,9 +278,7 @@ def create_app(settings: Optional[Settings] = None) -> FastAPI:
             gas,
         )
         with _database(base_settings) as session:
-            total = session.scalar(
-                select(func.count()).select_from(statement.subquery())
-            ) or 0
+            total = session.scalar(select(func.count()).select_from(statement.subquery())) or 0
         return JSONResponse(
             {"total": total, "preview_cards": min(total, 3)},
             headers={"Cache-Control": "public, max-age=60"},
@@ -287,7 +294,9 @@ def create_app(settings: Optional[Settings] = None) -> FastAPI:
         max_distance_km: Optional[float] = Query(default=None, ge=0, le=1_000),
         electricity: bool = False,
         gas: bool = False,
-        limit: int = Query(default=6, ge=1, le=12),
+        limit: int = Query(default=9, ge=1, le=24),
+        offset: int = Query(default=0, ge=0, le=10_000),
+        sort: Literal["match", "price", "distance", "newest"] = "match",
         profile_id: Optional[str] = Query(default=None, max_length=64),
     ) -> JSONResponse:
         _validate_widget_area(min_area_sotok, max_area_sotok)
@@ -310,28 +319,90 @@ def create_app(settings: Optional[Settings] = None) -> FastAPI:
                     electricity,
                     gas,
                 )
-                total = session.scalar(
-                    select(func.count()).select_from(statement.subquery())
-                ) or 0
-                rows = session.execute(
-                    statement.order_by(
-                        ListingProfileModel.score.desc(),
-                        ListingModel.last_seen_at.desc(),
-                    ).limit(limit)
-                ).all()
+                rows = session.execute(statement).all()
+                location_keys = {
+                    str((listing.raw_payload or {}).get("location_key"))
+                    for listing, _ in rows
+                    if (listing.raw_payload or {}).get("location_key")
+                }
+                locations = (
+                    {
+                        item.key: item
+                        for item in session.scalars(
+                            select(LocationProfileModel).where(
+                                LocationProfileModel.key.in_(location_keys)
+                            )
+                        )
+                    }
+                    if location_keys
+                    else {}
+                )
         except WidgetError as exc:
             raise HTTPException(status_code=exc.status_code, detail=exc.detail) from exc
+
+        items = [
+            _public_widget_listing_json(
+                listing,
+                locations.get(str((listing.raw_payload or {}).get("location_key"))),
+                base_settings.widget_auth_secret,
+                max_price_usd=max_price_usd,
+                min_area_sotok=min_area_sotok,
+                max_area_sotok=max_area_sotok,
+                max_distance_km=max_distance_km,
+                electricity_required=electricity,
+                gas_required=gas,
+            )
+            for listing, _ in rows
+        ]
+        items.sort(
+            key=lambda item: _widget_sort_key(item, sort),
+            reverse=sort == "newest",
+        )
+        total = len(items)
         return JSONResponse(
             {
                 "profile": {"id": selected_profile_id, "name": profile["name"]},
                 "total": total,
-                "items": [
-                    _public_widget_listing_json(listing, match)
-                    for listing, match in rows
-                ],
+                "offset": offset,
+                "limit": limit,
+                "has_more": offset + limit < total,
+                "items": items[offset : offset + limit],
             },
             headers={"Cache-Control": "private, max-age=60"},
         )
+
+    @app.post("/api/public/widget/statuses")
+    def widget_statuses(
+        request: Request,
+        payload: WidgetStatusPayload,
+    ) -> Dict[str, Any]:
+        references = list(
+            dict.fromkeys(str(reference or "").strip().upper() for reference in payload.references)
+        )
+        try:
+            with _database(base_settings) as session:
+                verified_lead(session, _bearer_token(request))
+                listings = _listings_from_public_refs(
+                    session,
+                    base_settings.widget_auth_secret,
+                    references,
+                )
+        except WidgetError as exc:
+            raise HTTPException(status_code=exc.status_code, detail=exc.detail) from exc
+        return {
+            "items": [
+                {
+                    "reference": reference,
+                    "active": bool(listings.get(reference) and listings[reference].active),
+                    "last_seen_at": (
+                        _iso(listings[reference].last_seen_at)
+                        if listings.get(reference)
+                        else None
+                    ),
+                }
+                for reference in references
+            ]
+        }
 
     @app.post("/api/public/widget/interests")
     def widget_interest(
@@ -341,20 +412,29 @@ def create_app(settings: Optional[Settings] = None) -> FastAPI:
         try:
             with _database(base_settings) as session:
                 lead = verified_lead(session, _bearer_token(request))
+                listing = _listing_from_public_ref(
+                    session,
+                    base_settings.widget_auth_secret,
+                    payload.reference,
+                )
                 notification = record_interest(
                     session,
                     lead,
-                    payload.listing_id,
+                    listing.id,
                     {
                         **payload.search_params,
-                        "contact_name": payload.name.strip(),
+                        "public_reference": _public_listing_ref(
+                            base_settings.widget_auth_secret,
+                            listing.id,
+                        ),
+                        "request_type": "listing_consultation",
                     },
                     payload.source_page,
                 )
         except WidgetError as exc:
             raise HTTPException(status_code=exc.status_code, detail=exc.detail) from exc
         notify_lead(base_settings, notification)
-        return {"ok": True, "message": "Интерес сохранён"}
+        return {"ok": True, "message": "Запрос передан специалисту"}
 
     @app.get("/api/widget/leads")
     def widget_leads() -> Dict[str, Any]:
@@ -365,15 +445,14 @@ def create_app(settings: Optional[Settings] = None) -> FastAPI:
                 .order_by(WidgetLeadModel.created_at.desc())
             ).all()
             interests = session.scalars(
-                select(WidgetInterestModel).order_by(
-                    WidgetInterestModel.created_at.desc()
-                )
+                select(WidgetInterestModel).order_by(WidgetInterestModel.created_at.desc())
             ).all()
         grouped: Dict[int, List[WidgetInterestModel]] = {}
         for interest in interests:
             grouped.setdefault(interest.lead_id, []).append(interest)
         return {
             "total": len(leads),
+            "requests_total": len(interests),
             "items": [
                 {
                     "id": lead.id,
@@ -385,6 +464,10 @@ def create_app(settings: Optional[Settings] = None) -> FastAPI:
                     "interests": [
                         {
                             "listing_id": item.listing_id,
+                            "reference": _public_listing_ref(
+                                base_settings.widget_auth_secret,
+                                item.listing_id,
+                            ),
                             "title": item.listing_title,
                             "url": item.listing_url,
                             "search_params": item.search_params,
@@ -462,46 +545,58 @@ def create_app(settings: Optional[Settings] = None) -> FastAPI:
         config = load_web_config(base_settings.database_url)
         selected_profile_id = _selected_profile_id(config, profile_id)
         with _database(base_settings) as session:
-            active = session.scalar(
-                select(func.count())
-                .select_from(ListingProfileModel)
-                .join(ListingModel, ListingModel.id == ListingProfileModel.listing_id)
-                .where(
-                    ListingProfileModel.profile_id == selected_profile_id,
-                    ListingModel.active,
+            active = (
+                session.scalar(
+                    select(func.count())
+                    .select_from(ListingProfileModel)
+                    .join(ListingModel, ListingModel.id == ListingProfileModel.listing_id)
+                    .where(
+                        ListingProfileModel.profile_id == selected_profile_id,
+                        ListingModel.active,
+                    )
                 )
-            ) or 0
-            archived = session.scalar(
-                select(func.count())
-                .select_from(ListingProfileModel)
-                .join(ListingModel, ListingModel.id == ListingProfileModel.listing_id)
-                .where(
-                    ListingProfileModel.profile_id == selected_profile_id,
-                    ~ListingModel.active,
+                or 0
+            )
+            archived = (
+                session.scalar(
+                    select(func.count())
+                    .select_from(ListingProfileModel)
+                    .join(ListingModel, ListingModel.id == ListingProfileModel.listing_id)
+                    .where(
+                        ListingProfileModel.profile_id == selected_profile_id,
+                        ~ListingModel.active,
+                    )
                 )
-            ) or 0
-            liked = session.scalar(
-                select(func.count())
-                .select_from(ListingDecisionModel)
-                .join(
-                    ListingProfileModel,
-                    ListingProfileModel.listing_id == ListingDecisionModel.listing_id,
+                or 0
+            )
+            liked = (
+                session.scalar(
+                    select(func.count())
+                    .select_from(ListingDecisionModel)
+                    .join(
+                        ListingProfileModel,
+                        ListingProfileModel.listing_id == ListingDecisionModel.listing_id,
+                    )
+                    .where(
+                        ListingProfileModel.profile_id == selected_profile_id,
+                        ListingDecisionModel.state.in_({"liked", "studying", "trip"}),
+                    )
                 )
-                .where(
-                    ListingProfileModel.profile_id == selected_profile_id,
-                    ListingDecisionModel.state.in_({"liked", "studying", "trip"}),
+                or 0
+            )
+            high_score = (
+                session.scalar(
+                    select(func.count())
+                    .select_from(ListingProfileModel)
+                    .join(ListingModel, ListingModel.id == ListingProfileModel.listing_id)
+                    .where(
+                        ListingProfileModel.profile_id == selected_profile_id,
+                        ListingModel.active,
+                        ListingProfileModel.score >= 80,
+                    )
                 )
-            ) or 0
-            high_score = session.scalar(
-                select(func.count())
-                .select_from(ListingProfileModel)
-                .join(ListingModel, ListingModel.id == ListingProfileModel.listing_id)
-                .where(
-                    ListingProfileModel.profile_id == selected_profile_id,
-                    ListingModel.active,
-                    ListingProfileModel.score >= 80,
-                )
-            ) or 0
+                or 0
+            )
             latest = session.scalar(
                 select(ScanRunModel).order_by(ScanRunModel.started_at.desc()).limit(1)
             )
@@ -581,9 +676,7 @@ def create_app(settings: Optional[Settings] = None) -> FastAPI:
                     )
                 )
             statement = statement.where(*conditions)
-            count = session.scalar(
-                select(func.count()).select_from(statement.subquery())
-            ) or 0
+            count = session.scalar(select(func.count()).select_from(statement.subquery())) or 0
             rows = session.execute(
                 statement.order_by(
                     ListingProfileModel.score.desc(),
@@ -593,7 +686,13 @@ def create_app(settings: Optional[Settings] = None) -> FastAPI:
                 .limit(page_size)
             ).all()
             return {
-                "items": [_listing_json(*row) for row in rows],
+                "items": [
+                    _listing_json(
+                        *row,
+                        public_secret=base_settings.widget_auth_secret,
+                    )
+                    for row in rows
+                ],
                 "total": count,
                 "page": page,
                 "page_size": page_size,
@@ -634,7 +733,11 @@ def create_app(settings: Optional[Settings] = None) -> FastAPI:
             ).one_or_none()
             if row is None:
                 raise HTTPException(status_code=404, detail="Объявление не найдено")
-            return _listing_json(*row, detailed=True)
+            return _listing_json(
+                *row,
+                detailed=True,
+                public_secret=base_settings.widget_auth_secret,
+            )
 
     @app.put("/api/listings/{listing_id}/decision")
     def update_decision(listing_id: int, payload: DecisionPayload) -> Dict[str, Any]:
@@ -645,9 +748,7 @@ def create_app(settings: Optional[Settings] = None) -> FastAPI:
             if listing is None:
                 raise HTTPException(status_code=404, detail="Объявление не найдено")
             decision = session.scalar(
-                select(ListingDecisionModel).where(
-                    ListingDecisionModel.listing_id == listing_id
-                )
+                select(ListingDecisionModel).where(ListingDecisionModel.listing_id == listing_id)
             )
             if decision is None:
                 decision = ListingDecisionModel(listing_id=listing_id)
@@ -851,9 +952,7 @@ def create_app(settings: Optional[Settings] = None) -> FastAPI:
                 statement = statement.where(ListingModel.id.in_(payload.listing_ids))
             else:
                 statement = statement.where(ListingDecisionModel.state == "trip")
-            rows = session.execute(
-                statement.order_by(ListingProfileModel.score.desc())
-            ).all()
+            rows = session.execute(statement.order_by(ListingProfileModel.score.desc())).all()
             points = [_trip_point(listing, decision) for listing, decision in rows]
         routes = build_trip_routes(
             points,
@@ -981,6 +1080,14 @@ def create_app(settings: Optional[Settings] = None) -> FastAPI:
     def widget_demo() -> FileResponse:
         return FileResponse(STATIC_DIR / "widget-demo.html")
 
+    @app.get("/sw.js")
+    def retire_service_worker() -> FileResponse:
+        return FileResponse(
+            STATIC_DIR / "sw.js",
+            media_type="application/javascript",
+            headers={"Cache-Control": "no-store, max-age=0"},
+        )
+
     @app.get("/")
     @app.get("/{path:path}")
     def index(request: Request, path: str = "") -> FileResponse:
@@ -1009,9 +1116,11 @@ def _listing_json(
     activity: Optional[ListingActivityModel],
     profile: Optional[ListingProfileModel],
     detailed: bool = False,
+    public_secret: Optional[str] = None,
 ) -> Dict[str, Any]:
     value: Dict[str, Any] = {
         "id": listing.id,
+        "public_ref": (_public_listing_ref(public_secret, listing.id) if public_secret else None),
         "external_id": f"{listing.source}:{listing.source_id}",
         "source": listing.source,
         "title": listing.title,
@@ -1063,26 +1172,290 @@ def _listing_json(
 
 def _public_widget_listing_json(
     listing: ListingModel,
-    profile: ListingProfileModel,
+    location_profile: Optional[LocationProfileModel],
+    public_secret: str,
+    *,
+    max_price_usd: Optional[float],
+    min_area_sotok: Optional[float],
+    max_area_sotok: Optional[float],
+    max_distance_km: Optional[float],
+    electricity_required: bool,
+    gas_required: bool,
 ) -> Dict[str, Any]:
-    location = ", ".join(
-        item for item in [listing.locality, listing.district] if item
+    location = _public_location(listing)
+    score, match_reasons, warnings = _personal_match_score(
+        listing,
+        location_profile,
+        max_price_usd=max_price_usd,
+        min_area_sotok=min_area_sotok,
+        max_area_sotok=max_area_sotok,
+        max_distance_km=max_distance_km,
+        electricity_required=electricity_required,
+        gas_required=gas_required,
     )
+    latitude = round(listing.latitude, 2) if listing.latitude is not None else None
+    longitude = round(listing.longitude, 2) if listing.longitude is not None else None
     return {
-        "id": listing.id,
-        "source": listing.source,
-        "title": listing.title,
+        "reference": _public_listing_ref(public_secret, listing.id),
+        "title": _public_listing_title(listing),
         "location": location,
         "price_usd": listing.price_usd,
         "area_sotok": listing.area_sotok,
         "distance_mkad_km": listing.distance_mkad_km,
-        "electricity": listing.electricity_raw,
-        "electricity_kw": listing.electricity_kw,
-        "gas": listing.gas_raw,
-        "score": profile.score,
-        "url": listing.canonical_url,
+        "facade_m": listing.facade_m,
+        "depth_m": listing.depth_m,
+        "purpose": _purpose_label(listing.purpose),
+        "ownership": _ownership_label(listing.ownership_raw),
+        "electricity": _electricity_label(listing),
+        "gas": _utility_label(listing.gas_raw, "gas"),
+        "water": _utility_label(listing.water_raw, "water"),
+        "sewerage": _utility_label(listing.sewerage_raw, "sewerage"),
+        "internet": _utility_label(listing.internet_raw, "internet"),
+        "road": _utility_label(listing.road_raw, "road"),
+        "match_score": score,
+        "match_reasons": match_reasons,
+        "warnings": warnings,
+        "location_score": location_profile.score if location_profile else None,
+        "location_verdict": location_profile.verdict if location_profile else None,
+        "location_confidence": location_profile.confidence if location_profile else None,
+        "location_signals": list(location_profile.signals[:4]) if location_profile else [],
+        "location_risks": list(location_profile.risks[:3]) if location_profile else [],
+        "nearby_premium_houses": (location_profile.premium_house_count if location_profile else 0),
+        "latitude": latitude,
+        "longitude": longitude,
+        "coordinates_approximate": latitude is not None and longitude is not None,
         "last_seen_at": _iso(listing.last_seen_at),
     }
+
+
+def _public_listing_ref(secret: str, listing_id: int) -> str:
+    digest = hmac.new(
+        secret.encode("utf-8"),
+        f"public-listing:{listing_id}".encode("utf-8"),
+        hashlib.sha256,
+    ).hexdigest()[:10]
+    return f"LP-{digest.upper()}"
+
+
+def _listing_from_public_ref(
+    session: Session,
+    secret: str,
+    reference: str,
+) -> ListingModel:
+    normalized = str(reference or "").strip().upper()
+    if not normalized.startswith("LP-"):
+        raise WidgetError("Вариант не найден", 404)
+    listings = session.scalars(
+        select(ListingModel).where(ListingModel.active.is_(True))
+    ).all()
+    for listing in listings:
+        expected = _public_listing_ref(secret, listing.id)
+        if secrets.compare_digest(expected, normalized):
+            return listing
+    raise WidgetError("Объявление больше недоступно", 404)
+
+
+def _listings_from_public_refs(
+    session: Session,
+    secret: str,
+    references: List[str],
+) -> Dict[str, ListingModel]:
+    wanted = {
+        reference
+        for reference in references
+        if len(reference) == 13 and reference.startswith("LP-")
+    }
+    if not wanted:
+        return {}
+    result: Dict[str, ListingModel] = {}
+    for listing in session.scalars(select(ListingModel)).all():
+        reference = _public_listing_ref(secret, listing.id)
+        if reference in wanted:
+            result[reference] = listing
+            if len(result) == len(wanted):
+                break
+    return result
+
+
+def _public_listing_title(listing: ListingModel) -> str:
+    area = (
+        f"{listing.area_sotok:g} сот." if listing.area_sotok is not None else "площадь уточняется"
+    )
+    if listing.locality:
+        return f"Участок {area} в районе {listing.locality}"
+    if listing.district:
+        return f"Участок {area}, {listing.district}"
+    return f"Участок {area}"
+
+
+def _public_location(listing: ListingModel) -> str:
+    if listing.locality and listing.district:
+        return f"Район {listing.locality}, {listing.district}"
+    if listing.locality:
+        return f"Район {listing.locality}"
+    return listing.district or "Расположение уточняется"
+
+
+def _personal_match_score(
+    listing: ListingModel,
+    location: Optional[LocationProfileModel],
+    *,
+    max_price_usd: Optional[float],
+    min_area_sotok: Optional[float],
+    max_area_sotok: Optional[float],
+    max_distance_km: Optional[float],
+    electricity_required: bool,
+    gas_required: bool,
+) -> tuple[int, List[str], List[str]]:
+    reasons: List[str] = []
+    warnings: List[str] = []
+
+    price_points = 15.0
+    if max_price_usd and listing.price_usd is not None:
+        ratio = min(1.0, max(0.0, listing.price_usd / max_price_usd))
+        price_points = 30.0 * (1.0 - 0.4 * ratio)
+        saving = max_price_usd - listing.price_usd
+        reasons.append(f"Ниже бюджета на ${saving:,.0f}".replace(",", " "))
+    elif listing.price_usd is None:
+        warnings.append("Цена не подтверждена")
+
+    area_points = 17.0
+    if listing.area_sotok is not None and min_area_sotok and max_area_sotok:
+        center = (min_area_sotok + max_area_sotok) / 2
+        half_range = max((max_area_sotok - min_area_sotok) / 2, 0.5)
+        closeness = max(0.0, 1.0 - abs(listing.area_sotok - center) / half_range)
+        area_points = 17.0 + 8.0 * closeness
+        reasons.append("Площадь входит в выбранный диапазон")
+    elif listing.area_sotok is None:
+        warnings.append("Площадь не подтверждена")
+
+    distance_points = 10.0
+    if max_distance_km is not None and listing.distance_mkad_km is not None:
+        if max_distance_km == 0:
+            ratio = 0.0
+        else:
+            ratio = min(1.0, max(0.0, listing.distance_mkad_km / max_distance_km))
+        distance_points = 20.0 * (1.0 - 0.4 * ratio)
+        reasons.append(f"Около {listing.distance_mkad_km:g} км до МКАД")
+    elif listing.distance_mkad_km is None:
+        warnings.append("Расстояние до МКАД не подтверждено")
+
+    utility_points = 0.0
+    if listing.electricity_kw:
+        utility_points += 7.0
+        reasons.append(f"Электричество {listing.electricity_kw:g} кВт")
+    elif listing.electricity_raw:
+        utility_points += 5.0
+        reasons.append("Электричество упоминается")
+    elif electricity_required:
+        warnings.append("Электричество не подтверждено")
+    if listing.gas_raw:
+        utility_points += 4.0
+        reasons.append("Есть сведения о газе")
+    elif gas_required:
+        warnings.append("Газ не подтверждён")
+    utility_points += min(
+        4.0,
+        sum(
+            1.0
+            for value in (
+                listing.water_raw,
+                listing.sewerage_raw,
+                listing.internet_raw,
+                listing.road_raw,
+            )
+            if value
+        ),
+    )
+
+    location_points = (location.score / 100 * 10.0) if location else 5.0
+    if location:
+        reasons.append(f"Оценка локации {location.score}/100")
+    else:
+        warnings.append("Локация ещё изучается")
+
+    return (
+        round(
+            min(
+                100.0,
+                price_points + area_points + distance_points + utility_points + location_points,
+            )
+        ),
+        reasons[:5],
+        warnings[:4],
+    )
+
+
+def _electricity_label(listing: ListingModel) -> Optional[str]:
+    if listing.electricity_kw:
+        return f"{listing.electricity_kw:g} кВт"
+    return "Упоминается" if listing.electricity_raw else None
+
+
+def _utility_label(value: Optional[str], kind: str) -> Optional[str]:
+    if not value:
+        return None
+    text = value.lower()
+    patterns = {
+        "gas": (("по улице", "По улице"), ("на участке", "На участке")),
+        "water": (
+            ("централ", "Центральная"),
+            ("скваж", "Скважина"),
+            ("колод", "Колодец"),
+        ),
+        "sewerage": (
+            ("централ", "Центральная"),
+            ("септик", "Септик"),
+            ("местн", "Местная"),
+        ),
+        "internet": (
+            ("оптовол", "Оптоволокно"),
+            ("оптик", "Оптоволокно"),
+            ("4g", "4G"),
+        ),
+        "road": (
+            ("асфальт", "Асфальт"),
+            ("грав", "Гравийная"),
+            ("грунт", "Грунтовая"),
+        ),
+    }
+    for marker, label in patterns.get(kind, ()):
+        if marker in text:
+            return label
+    return "Есть сведения"
+
+
+def _ownership_label(value: Optional[str]) -> Optional[str]:
+    text = (value or "").lower()
+    if "частн" in text and "собствен" in text:
+        return "Частная собственность"
+    if "пожизн" in text:
+        return "Пожизненное наследуемое владение"
+    if "аренд" in text:
+        return "Аренда"
+    return "Указана в объявлении" if text else None
+
+
+def _purpose_label(value: Optional[str]) -> Optional[str]:
+    text = (value or "").lower()
+    if any(marker in text for marker in ("жилого дома", "строительств")):
+        return "Для строительства жилого дома"
+    if any(marker in text for marker in ("садовод", "дач")):
+        return "Садоводство"
+    return "Назначение указано" if text else None
+
+
+def _widget_sort_key(item: Dict[str, Any], sort: str) -> tuple:
+    if sort == "price":
+        return (item["price_usd"] is None, item["price_usd"] or 0)
+    if sort == "distance":
+        return (
+            item["distance_mkad_km"] is None,
+            item["distance_mkad_km"] or 0,
+        )
+    if sort == "newest":
+        return (item["last_seen_at"] or "",)
+    return (-item["match_score"], -(item["location_score"] or 0))
 
 
 def _run_json(run: ScanRunModel) -> Dict[str, Any]:
@@ -1149,11 +1522,9 @@ def _widget_listing_statement(
         pattern = f"%{q.strip()}%"
         conditions.append(
             or_(
-                ListingModel.title.ilike(pattern),
                 ListingModel.locality.ilike(pattern),
                 ListingModel.district.ilike(pattern),
                 ListingModel.direction.ilike(pattern),
-                ListingModel.description.ilike(pattern),
             )
         )
     if max_price_usd is not None:
@@ -1207,6 +1578,7 @@ def _widget_listing_statement(
 def _is_public_widget_path(path: str) -> bool:
     return path in {
         "/health",
+        "/sw.js",
         "/widget-demo",
         "/static/landplotfinder-widget.js",
     } or path.startswith("/api/public/widget/")
@@ -1245,11 +1617,7 @@ def _trip_point(
         place=listing.title,
         price=f"${listing.price_usd:,.0f}" if listing.price_usd is not None else "",
         area=f"{listing.area_sotok:g}" if listing.area_sotok is not None else "",
-        distance=(
-            f"{listing.distance_mkad_km:g}"
-            if listing.distance_mkad_km is not None
-            else ""
-        ),
+        distance=(f"{listing.distance_mkad_km:g}" if listing.distance_mkad_km is not None else ""),
         latitude=float(listing.latitude),
         longitude=float(listing.longitude),
         rating=str(listing.score),
@@ -1273,9 +1641,7 @@ def _haversine(lat_a: float, lon_a: float, lat_b: float, lon_b: float) -> float:
     delta_longitude = math.radians(lon_b - lon_a)
     value = (
         math.sin(delta_latitude / 2) ** 2
-        + math.cos(latitude_a)
-        * math.cos(latitude_b)
-        * math.sin(delta_longitude / 2) ** 2
+        + math.cos(latitude_a) * math.cos(latitude_b) * math.sin(delta_longitude / 2) ** 2
     )
     return 6371.0088 * 2 * math.asin(math.sqrt(value))
 

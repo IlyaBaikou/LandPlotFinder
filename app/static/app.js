@@ -1,6 +1,6 @@
 const state = {
   view: 'dashboard', page: 1, settings: null, profiles: [], profileId: 'default',
-  map: null, mapMarkers: null, detail: null,
+  map: null, mapMarkers: null, detail: null, widgetAdmin: null,
 };
 const $ = (selector) => document.querySelector(selector);
 const $$ = (selector) => [...document.querySelectorAll(selector)];
@@ -15,9 +15,19 @@ const dt = (value) => value ? new Intl.DateTimeFormat('ru-RU', {
   dateStyle: 'medium', timeStyle: 'short',
 }).format(new Date(value)) : '—';
 const decisions = { new: 'Не разобрано', liked: 'Приглянулось', studying: 'Изучаем', trip: 'К поездке', rejected: 'Отказ' };
-const sourceNames = { realt: 'Realt.by', kufar: 'Kufar', realt_auction: 'Аукционы Realt', rlt_auction: 'RLT', e_auction: 'e-auction.by' };
+const presentationMode = new URLSearchParams(location.search).get('presentation') === '1';
+const sourceNames = presentationMode
+  ? { realt: 'Площадка A', kufar: 'Площадка B', realt_auction: 'Торги A', rlt_auction: 'Торги B', e_auction: 'Торги C' }
+  : { realt: 'Realt.by', kufar: 'Kufar', realt_auction: 'Аукционы Realt', rlt_auction: 'RLT', e_auction: 'e-auction.by' };
 const healthNames = { healthy: 'Работает', degraded: 'Нужна проверка', error: 'Ошибка', empty: 'Пустая выдача', never: 'Ещё не проверен' };
 const mapProviderNames = { google: 'Google Maps', yandex: 'Яндекс Карты' };
+const displayTitle = (listing) => presentationMode
+  ? `Участок ${listing.area_sotok == null ? '' : `${number(listing.area_sotok)} сот. `}в выбранном районе`
+  : listing.title;
+const displayPlace = (listing) => presentationMode
+  ? 'Выбранное направление, пригород'
+  : [listing.locality, listing.district, listing.address].filter(Boolean).join(', ');
+const displayPhone = (phone) => presentationMode ? '+375 •• •••-••-••' : phone;
 
 async function api(url, options = {}) {
   const headers = { ...(options.headers || {}) };
@@ -40,12 +50,14 @@ function setView(view) {
   const titles = {
     dashboard: ['Ваш поиск', 'Добрый день'], listings: ['Каталог', 'Найденные объекты'],
     map: ['География', 'Карта участков'], health: ['Надёжность', 'Источники данных'],
+    widget: ['Клиентский подбор', 'Виджет для сайта'],
     settings: ['Конфигурация', 'Настройки поиска'],
   };
   $('#pageEyebrow').textContent = titles[view][0]; $('#pageTitle').textContent = titles[view][1];
   $('.sidebar').classList.remove('open');
   if (view === 'listings') loadListings();
   if (view === 'map') loadMap();
+  if (view === 'widget') loadWidgetAdmin();
   if (view === 'health') loadHealth();
   if (view === 'settings') { fillSettings(); loadBackupInfo(); }
   location.hash = view;
@@ -53,7 +65,7 @@ function setView(view) {
 
 async function loadProfiles() {
   const data = await api('/api/profiles'); state.profiles = data.items; state.profileId = data.active_profile_id;
-  $('#profileSelect').innerHTML = state.profiles.map((profile) => `<option value="${esc(profile.id)}">${esc(profile.name)}</option>`).join('');
+  $('#profileSelect').innerHTML = state.profiles.map((profile, index) => `<option value="${esc(profile.id)}">${esc(presentationMode ? `Демо-профиль ${index + 1}` : profile.name)}</option>`).join('');
   $('#profileSelect').value = state.profileId;
 }
 async function switchProfile(profileId) {
@@ -86,10 +98,10 @@ async function loadDashboard() {
   } catch (error) { $('#dashboardListings').innerHTML = `<div class="empty">${esc(error.message)}</div>`; }
 }
 function compactCard(listing) {
-  return `<article class="compact-listing" data-open="${listing.id}"><div class="score-badge">${listing.score}</div><div><h4>${esc(listing.title)}</h4><div class="meta"><span>${esc(listing.locality || listing.district || 'Место не указано')}</span><span>${number(listing.area_sotok)} сот.</span><span>${number(listing.distance_mkad_km)} км</span></div></div><div class="price">${money(listing.price_usd)}</div></article>`;
+  return `<article class="compact-listing" data-open="${listing.id}"><div class="score-badge">${listing.score}</div><div><h4>${esc(displayTitle(listing))}</h4><div class="meta"><span>${esc(displayPlace(listing) || 'Место не указано')}</span><span>${number(listing.area_sotok)} сот.</span><span>${number(listing.distance_mkad_km)} км</span></div></div><div class="price">${money(listing.price_usd)}</div></article>`;
 }
 function card(listing) {
-  return `<article class="listing-card"><div class="card-top"><span class="source-tag">${esc(sourceNames[listing.source] || listing.source)}</span><span class="decision-tag ${listing.decision}">${esc(decisions[listing.decision] || listing.decision)}</span></div><h3>${esc(listing.title)}</h3><div class="location">${esc([listing.locality, listing.district].filter(Boolean).join(', ') || 'Место не указано')}</div><div class="numbers"><div><span>Цена</span><b>${money(listing.price_usd)}</b></div><div><span>Площадь</span><b>${number(listing.area_sotok)} сот.</b></div><div><span>До МКАД</span><b>${number(listing.distance_mkad_km)} км</b></div></div><div class="meta"><span>Оценка <b>${listing.score}/100</b></span>${listing.possible_duplicate ? '<span>Возможный дубль</span>' : ''}</div><div class="card-actions"><button data-open="${listing.id}">Подробнее</button><button class="${listing.decision === 'liked' ? 'liked' : ''}" data-decision="liked" data-id="${listing.id}">☆ Приглянулось</button></div></article>`;
+  return `<article class="listing-card"><div class="card-top"><span class="source-tag">${esc(sourceNames[listing.source] || listing.source)}</span><span class="decision-tag ${listing.decision}">${esc(decisions[listing.decision] || listing.decision)}</span></div><h3>${esc(displayTitle(listing))}</h3><div class="location">${esc(displayPlace(listing) || 'Место не указано')}</div><div class="numbers"><div><span>Цена</span><b>${money(listing.price_usd)}</b></div><div><span>Площадь</span><b>${number(listing.area_sotok)} сот.</b></div><div><span>До МКАД</span><b>${number(listing.distance_mkad_km)} км</b></div></div><div class="meta"><span>Оценка <b>${listing.score}/100</b></span>${listing.possible_duplicate ? '<span>Возможный дубль</span>' : ''}</div><div class="card-actions"><button data-open="${listing.id}">Подробнее</button><button class="${listing.decision === 'liked' ? 'liked' : ''}" data-decision="liked" data-id="${listing.id}">☆ Приглянулось</button></div></article>`;
 }
 let searchTimer;
 async function loadListings() {
@@ -114,7 +126,7 @@ async function openDetail(id) {
   try {
     const [listing, history] = await Promise.all([api(`/api/listings/${id}?${profileParams()}`), api(`/api/listings/${id}/history`)]);
     state.detail = listing;
-    $('#drawerContent').innerHTML = `<div class="detail-score">${listing.score}</div><p class="eyebrow">${esc(sourceNames[listing.source] || listing.source)} · ${listing.active ? 'актуально' : 'архив'}</p><h2 class="detail-title">${esc(listing.title)}</h2><p>${esc([listing.locality, listing.district, listing.address].filter(Boolean).join(', '))}</p><div class="detail-grid"><div><small>Цена</small><b>${money(listing.price_usd)}</b></div><div><small>Площадь</small><b>${number(listing.area_sotok)} сот.</b></div><div><small>Расстояние</small><b>${number(listing.distance_mkad_km)} км</b></div><div><small>Электричество</small><b>${esc(listing.electricity_kw ? `${listing.electricity_kw} кВт` : listing.electricity || '—')}</b></div><div><small>Газ</small><b>${esc(listing.gas || '—')}</b></div><div><small>Интернет</small><b>${esc(listing.internet || '—')}</b></div></div><h3>Ваше решение</h3><div class="decision-row">${Object.entries(decisions).map(([key, value]) => `<button class="${listing.decision === key ? 'active' : ''}" data-detail-decision="${key}">${value}</button>`).join('')}</div><textarea class="detail-note" id="detailNote" placeholder="Заметки об участке">${esc(listing.note)}</textarea><button class="button secondary full" id="saveDecision">Сохранить решение</button><a class="button primary full" href="${esc(listing.url)}" target="_blank" rel="noopener">Открыть объявление ↗</a>${listing.description ? `<h3>Описание</h3><div class="detail-description">${esc(listing.description)}</div>` : ''}${historyBlock(history)}`;
+    $('#drawerContent').innerHTML = `<div class="detail-score">${listing.score}</div><p class="eyebrow">${esc(sourceNames[listing.source] || listing.source)} · ${listing.active ? 'актуально' : 'архив'}</p><h2 class="detail-title">${esc(displayTitle(listing))}</h2><p>${esc(displayPlace(listing))}</p><div class="detail-grid"><div><small>Цена</small><b>${money(listing.price_usd)}</b></div><div><small>Площадь</small><b>${number(listing.area_sotok)} сот.</b></div><div><small>Расстояние</small><b>${number(listing.distance_mkad_km)} км</b></div><div><small>Электричество</small><b>${esc(listing.electricity_kw ? `${listing.electricity_kw} кВт` : listing.electricity || '—')}</b></div><div><small>Газ</small><b>${esc(listing.gas || '—')}</b></div><div><small>Интернет</small><b>${esc(listing.internet || '—')}</b></div></div><h3>Ваше решение</h3><div class="decision-row">${Object.entries(decisions).map(([key, value]) => `<button class="${listing.decision === key ? 'active' : ''}" data-detail-decision="${key}">${value}</button>`).join('')}</div><textarea class="detail-note" id="detailNote" placeholder="Заметки об участке">${esc(presentationMode ? '' : listing.note)}</textarea><button class="button secondary full" id="saveDecision">Сохранить решение</button><a class="button primary full" href="${esc(listing.url)}" target="_blank" rel="noopener">Открыть исходную карточку ↗</a>${listing.description ? `<h3>Описание</h3><div class="detail-description">${esc(presentationMode ? 'Описание скрыто в презентационном режиме.' : listing.description)}</div>` : ''}${historyBlock(history)}`;
     $('#detailDrawer').classList.add('open'); $('#drawerShade').classList.add('open'); $('#detailDrawer').setAttribute('aria-hidden', 'false');
   } catch (error) { toast(error.message); }
 }
@@ -216,10 +228,48 @@ async function loadHealth() {
   try { const data = await api(`/api/source-health?${profileParams()}`); $('#sourceHealthGrid').innerHTML = data.items.length ? data.items.map(healthCard).join('') : '<div class="empty">В этом профиле нет источников.</div>'; }
   catch (error) { $('#sourceHealthGrid').innerHTML = `<div class="empty">${esc(error.message)}</div>`; }
 }
+
+async function loadWidgetAdmin() {
+  try {
+    state.widgetAdmin = await api('/api/widget/leads');
+    $('#widgetLeadCount').textContent = number(state.widgetAdmin.total, '0');
+    $('#widgetRequestCount').textContent = number(state.widgetAdmin.requests_total, '0');
+    const since = Date.now() - 7 * 24 * 60 * 60 * 1000;
+    const recent = widgetRequests().filter((item) => new Date(item.created_at).getTime() >= since).length;
+    $('#widgetRecentCount').textContent = number(recent, '0');
+    renderWidgetRequests();
+  } catch (error) {
+    $('#widgetRequestList').innerHTML = `<div class="empty">${esc(error.message)}</div>`;
+  }
+}
+function widgetRequests() {
+  return (state.widgetAdmin?.items || []).flatMap((lead) => (lead.interests || []).map((interest) => ({
+    ...interest, phone: lead.phone, lead_id: lead.id, lead_source_page: lead.source_page,
+  }))).sort((left, right) => new Date(right.created_at) - new Date(left.created_at));
+}
+function renderWidgetRequests() {
+  const query = ($('#widgetSearchInput')?.value || '').trim().toLowerCase();
+  const requests = widgetRequests().filter((item) => !query || [item.phone, item.reference, item.title, JSON.stringify(item.search_params || {})].join(' ').toLowerCase().includes(query));
+  $('#widgetRequestList').innerHTML = requests.length ? requests.map(widgetRequestCard).join('')
+    : '<div class="empty">Запросов по конкретным объявлениям пока нет.</div>';
+}
+function widgetRequestCard(item) {
+  return `<article class="widget-request"><div class="widget-request-head"><div><span class="widget-ref">${esc(item.reference)}</span><h4>${esc(displayTitle(item))}</h4></div><time>${esc(dt(item.created_at))}</time></div><div class="widget-client"><a href="${presentationMode ? '#' : `tel:${esc(item.phone)}`}">${esc(displayPhone(item.phone))}</a><span>подтверждённый номер</span></div><div class="widget-criteria">${widgetCriteria(item.search_params)}</div><div class="widget-request-actions"><button class="button secondary" data-open="${item.listing_id}">Карточка в базе</button><a class="button primary" href="${esc(item.url)}" target="_blank" rel="noopener">Исходная карточка ↗</a></div></article>`;
+}
+function widgetCriteria(params = {}) {
+  const values = [];
+  if (params.q) values.push(`Место: ${presentationMode ? 'выбранное направление' : params.q}`);
+  if (params.max_price_usd) values.push(`До $${number(params.max_price_usd)}`);
+  if (params.min_area_sotok || params.max_area_sotok) values.push(`Площадь ${params.min_area_sotok || '—'}–${params.max_area_sotok || '—'} сот.`);
+  if (params.max_distance_km) values.push(`До ${params.max_distance_km} км`);
+  if (params.electricity === 'true') values.push('Нужно электричество');
+  if (params.gas === 'true') values.push('Нужен газ');
+  return values.length ? values.map((value) => `<span>${esc(value)}</span>`).join('') : '<span>Без дополнительных фильтров</span>';
+}
 function healthCard(item) {
   const diagnostics = item.diagnostics || {}; const http = diagnostics.http || {}; const warnings = diagnostics.warnings || [];
-  const message = item.last_error || warnings[0] || (item.last_success_at ? `Последняя успешная проверка: ${dt(item.last_success_at)}` : 'Запустите первый поиск');
-  return `<article class="health-card"><div class="health-head"><h3>${esc(sourceNames[item.source] || item.source)}</h3><span class="health-status ${esc(item.status)}">${esc(healthNames[item.status] || item.status)}</span></div><div class="health-numbers"><div><small>Объектов</small><b>${number(item.last_item_count, '0')}</b></div><div><small>Запросов</small><b>${number(http.requests, '0')}</b></div><div><small>Повторов</small><b>${number(http.retries, '0')}</b></div></div><div class="health-message">${esc(message)}</div>${item.next_retry_at ? `<div class="health-warning">Повтор: ${esc(dt(item.next_retry_at))}</div>` : ''}${warnings.slice(1).map((warning) => `<div class="health-warning">${esc(warning)}</div>`).join('')}</article>`;
+  const message = presentationMode && (item.last_error || warnings[0]) ? 'Последняя проверка завершилась ошибкой' : item.last_error || warnings[0] || (item.last_success_at ? `Последняя успешная проверка: ${dt(item.last_success_at)}` : 'Запустите первый поиск');
+  return `<article class="health-card"><div class="health-head"><h3>${esc(sourceNames[item.source] || item.source)}</h3><span class="health-status ${esc(item.status)}">${esc(healthNames[item.status] || item.status)}</span></div><div class="health-numbers"><div><small>Объектов</small><b>${number(item.last_item_count, '0')}</b></div><div><small>Запросов</small><b>${number(http.requests, '0')}</b></div><div><small>Повторов</small><b>${number(http.retries, '0')}</b></div></div><div class="health-message">${esc(message)}</div>${item.next_retry_at ? `<div class="health-warning">Повтор: ${esc(dt(item.next_retry_at))}</div>` : ''}${presentationMode ? '' : warnings.slice(1).map((warning) => `<div class="health-warning">${esc(warning)}</div>`).join('')}</article>`;
 }
 async function loadMap() {
   if (!window.L) { toast('Не удалось загрузить карту'); return; }
@@ -227,12 +277,12 @@ async function loadMap() {
   setTimeout(() => state.map.invalidateSize(), 50);
   try { const data = await api(`/api/map?${profileParams()}`); state.mapMarkers.clearLayers(); const colors = { new: '#718277', liked: '#b8874d', studying: '#9a713f', trip: '#a54f42', rejected: '#999' };
     $('#mapProviderHint').textContent = `Использовать: ${data.map_provider_label}`;
-    data.items.forEach((listing) => L.circleMarker([listing.latitude, listing.longitude], { radius: 7, color: '#fff', weight: 2, fillColor: colors[listing.decision] || colors.new, fillOpacity: 1 }).addTo(state.mapMarkers).bindPopup(`<b>${esc(listing.title)}</b><br>${money(listing.price_usd)} · ${number(listing.area_sotok)} сот.<div class="map-popup-actions"><button onclick="window.openListing(${listing.id})">Подробнее</button><a href="${esc(listing.map_url)}" target="_blank" rel="noopener">${esc(data.map_provider_label)} ↗</a></div>`)); }
+    data.items.forEach((listing) => L.circleMarker([listing.latitude, listing.longitude], { radius: 7, color: '#fff', weight: 2, fillColor: colors[listing.decision] || colors.new, fillOpacity: 1 }).addTo(state.mapMarkers).bindPopup(`<b>${esc(displayTitle(listing))}</b><br>${money(listing.price_usd)} · ${number(listing.area_sotok)} сот.<div class="map-popup-actions"><button onclick="window.openListing(${listing.id})">Подробнее</button><a href="${esc(listing.map_url)}" target="_blank" rel="noopener">${esc(data.map_provider_label)} ↗</a></div>`)); }
   catch (error) { toast(error.message); }
 }
 async function buildTrip() {
   try { const data = await api(`/api/trips/plan?${profileParams()}`, { method: 'POST', body: JSON.stringify({ listing_ids: [], max_points_per_route: 4 }) });
-    $('#routeResults').innerHTML = data.routes.length ? data.routes.map((route) => `<article class="route-card"><div><h4>Маршрут ${route.index} · ${route.distance_km} км</h4><p>${route.items.map((item) => esc(item.title)).join(' → ')}</p></div><a class="button primary" href="${esc(route.url)}" target="_blank" rel="noopener">Открыть: ${esc(data.map_provider_label)} ↗</a></article>`).join('') : '<div class="empty">Отметьте объекты статусом «К поездке», и сервис соберёт маршрут.</div>'; }
+    $('#routeResults').innerHTML = data.routes.length ? data.routes.map((route) => `<article class="route-card"><div><h4>Маршрут ${route.index} · ${route.distance_km} км</h4><p>${route.items.map((item) => esc(displayTitle(item))).join(' → ')}</p></div><a class="button primary" href="${esc(route.url)}" target="_blank" rel="noopener">Открыть: ${esc(data.map_provider_label)} ↗</a></article>`).join('') : '<div class="empty">Отметьте объекты статусом «К поездке», и сервис соберёт маршрут.</div>'; }
   catch (error) { toast(error.message); }
 }
 async function loadBackupInfo() {
@@ -243,6 +293,17 @@ async function restoreSelectedBackup(file) {
   if (!file || !confirm(`Восстановить данные из «${file.name}»? Текущая база будет заменена.`)) return;
   try { const response = await fetch('/api/backups/restore', { method: 'POST', headers: { 'Content-Type': 'application/octet-stream' }, body: file }); const data = await response.json(); if (!response.ok) throw new Error(data.detail || 'Не удалось восстановить базу'); toast('База восстановлена. Перезагружаем интерфейс'); setTimeout(() => location.reload(), 900); }
   catch (error) { toast(error.message); }
+}
+
+function applyPresentationMode() {
+  if (!presentationMode) return;
+  Object.entries(sourceNames).forEach(([source, label]) => {
+    const option = document.querySelector(`#sourceFilter option[value="${source}"]`);
+    if (option) option.textContent = label;
+    const checkbox = document.querySelector(`input[name="sources"][value="${source}"]`);
+    const title = checkbox?.closest('.check-card')?.querySelector('b');
+    if (title) title.textContent = label;
+  });
 }
 
 window.openListing = openDetail;
@@ -258,6 +319,7 @@ document.addEventListener('click', (event) => {
 $$('.nav-item').forEach((element) => element.addEventListener('click', () => setView(element.dataset.view)));
 $('#mobileMenu').onclick = () => $('.sidebar').classList.toggle('open'); $('#scanButton').onclick = () => runJob('scan');
 $('#activityButton').onclick = () => runJob('activity'); $('#refreshHealthButton').onclick = loadHealth; $('#buildTripButton').onclick = buildTrip;
+$('#refreshWidgetButton').onclick = loadWidgetAdmin; $('#widgetSearchInput').oninput = renderWidgetRequests;
 $('#newProfileButton').onclick = createProfile; $('#deleteProfileButton').onclick = deleteProfile; $('#profileSelect').onchange = (event) => switchProfile(event.target.value);
 $('#drawerClose').onclick = closeDetail; $('#drawerShade').onclick = closeDetail;
 $('#settingsForm').onsubmit = (event) => { event.preventDefault(); saveSettings(event.currentTarget); };
@@ -266,7 +328,8 @@ $('#restoreButton').onclick = () => $('#restoreFile').click(); $('#restoreFile')
 ['searchInput', 'decisionFilter', 'sourceFilter', 'activeFilter', 'scoreInput'].forEach((id) => { $(`#${id}`).addEventListener(id === 'searchInput' ? 'input' : 'change', () => { state.page = 1; if (id === 'scoreInput') $('#scoreValue').textContent = $('#scoreInput').value; loadListings(); }); });
 
 (async () => {
-  const hash = location.hash.slice(1); if (['dashboard', 'listings', 'map', 'health', 'settings'].includes(hash)) setView(hash);
+  applyPresentationMode();
+  const hash = location.hash.slice(1); if (['dashboard', 'listings', 'map', 'widget', 'health', 'settings'].includes(hash)) setView(hash);
   await loadProfiles(); await loadSettings(); await Promise.all([loadSummary(), loadDashboard()]);
   const job = await api('/api/jobs'); if (job.running) pollJobs();
 })();

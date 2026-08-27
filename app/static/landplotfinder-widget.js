@@ -8,35 +8,52 @@
     target: script.dataset.target || "landplotfinder-widget",
     apiBase: (script.dataset.apiBase || new URL(script.src).origin).replace(/\/$/, ""),
     profileId: script.dataset.profileId || "",
-    company: script.dataset.companyName || "ЛИДЕР СТРОЙ",
+    company: script.dataset.companyName || "ВАША КОМПАНИЯ",
     accent: script.dataset.accent || "#ffb434",
     privacyUrl: script.dataset.privacyUrl || "#",
     maxPrice: script.dataset.maxPrice || "70000",
     minArea: script.dataset.minArea || "6",
     maxArea: script.dataset.maxArea || "20",
     maxDistance: script.dataset.maxDistance || "50",
+    defaultMapProvider: script.dataset.mapProvider || "yandex",
   };
-  const storageKey = `lpf-widget-token:${config.apiBase}`;
+  const storagePrefix = `lpf-widget:${config.apiBase}`;
+  const tokenKey = `${storagePrefix}:token`;
+  const savedKey = `${storagePrefix}:saved`;
+  const mapKey = `${storagePrefix}:map-provider`;
   const mount = document.getElementById(config.target) || createMount(script);
   const root = mount.shadowRoot || mount.attachShadow({ mode: "open" });
-  let token = localStorage.getItem(storageKey) || sessionStorage.getItem(storageKey) || "";
+
+  let token = localStorage.getItem(tokenKey) || sessionStorage.getItem(tokenKey) || "";
   let currentPhone = "";
   let lastSearch = {};
   let lastPreview = { total: 0, preview_cards: 0 };
+  let items = [];
+  let total = 0;
+  let hasMore = false;
+  let offset = 0;
+  let sortMode = "match";
+  let activeTab = "results";
+  let mapProvider = localStorage.getItem(mapKey) || config.defaultMapProvider;
+  let mapFocusRef = "";
+  let compareRefs = new Set();
+  let savedStatuses = new Map();
+  let savedStatusCheckedAt = 0;
+  let savedStatusPromise = null;
+  let savedStatusError = "";
+  const requestedRefs = new Set();
 
+  if (!new Set(["yandex", "google"]).has(mapProvider)) mapProvider = "yandex";
   if (token) {
-    localStorage.setItem(storageKey, token);
-    sessionStorage.removeItem(storageKey);
+    localStorage.setItem(tokenKey, token);
+    sessionStorage.removeItem(tokenKey);
   }
 
   root.innerHTML = `<style>${styles()}</style><section class="lpf-shell"><div id="lpf-app"></div></section>`;
   const app = root.getElementById("lpf-app");
   renderSearch();
-  if (token) {
-    runSearch();
-  } else {
-    setStatus("Задайте параметры и нажмите «Показать варианты».", "ready");
-  }
+  if (token) runSearch();
+  else setStatus("Задайте параметры и нажмите «Показать варианты».", "ready");
 
   function createMount(anchor) {
     const node = document.createElement("div");
@@ -48,11 +65,11 @@
   function renderSearch() {
     app.innerHTML = `
       <header class="lpf-header">
-        <div><div class="lpf-kicker">Каталог участков</div><h2>Подберите участок под ваш дом</h2></div>
+        <div><div class="lpf-kicker">Умный подбор земли</div><h2>Найдите место для будущего дома</h2></div>
         <div class="lpf-brand">${html(config.company)}</div>
       </header>
       <form id="search-form" class="lpf-filters">
-        <label class="lpf-wide">Место или направление<input name="q" placeholder="Например, Логойское направление"></label>
+        <label class="lpf-wide">Место или направление<input name="q" placeholder="Например, северное направление"></label>
         <label>Бюджет до, $<input name="max_price_usd" type="number" min="1" value="${attr(config.maxPrice)}"></label>
         <label>Площадь от, сот.<input name="min_area_sotok" type="number" min="1" step="0.1" value="${attr(config.minArea)}"></label>
         <label>Площадь до, сот.<input name="max_area_sotok" type="number" min="1" step="0.1" value="${attr(config.maxArea)}"></label>
@@ -63,7 +80,7 @@
       </form>
       <div id="search-status" class="lpf-status" aria-live="polite"></div>
       <div id="search-results"></div>
-      <div class="lpf-bottom"><span>База обновляется автоматически</span><button id="logout" class="lpf-link" type="button" ${token ? "" : "hidden"}>Сменить телефон</button></div>`;
+      <div class="lpf-bottom"><span>Данные обновляются автоматически · точные объявления доступны менеджеру</span><button id="logout" class="lpf-link" type="button" ${token ? "" : "hidden"}>Сменить телефон</button></div>`;
     restoreSearchForm();
     app.querySelector("#search-form").addEventListener("submit", (event) => {
       event.preventDefault();
@@ -72,8 +89,9 @@
     app.querySelector("#logout").addEventListener("click", () => {
       clearToken();
       lastSearch = {};
+      items = [];
       renderSearch();
-      setStatus("Номер удалён с этого устройства. Задайте параметры для нового поиска.", "ready");
+      setStatus("Номер удалён с этого устройства. Сохранённые варианты остались в браузере.", "ready");
     });
   }
 
@@ -92,31 +110,44 @@
     return params;
   }
 
+  function paramsFromLastSearch() { return new URLSearchParams(lastSearch); }
+
   function restoreSearchForm() {
     if (!Object.keys(lastSearch).length) return;
     const form = app.querySelector("#search-form");
     Object.entries(lastSearch).forEach(([key, value]) => {
       if (!form.elements[key]) return;
-      if (form.elements[key].type === "checkbox") {
-        form.elements[key].checked = value === "true";
-      } else {
-        form.elements[key].value = value;
-      }
+      if (form.elements[key].type === "checkbox") form.elements[key].checked = value === "true";
+      else form.elements[key].value = value;
     });
   }
 
   async function runSearch() {
     const params = searchParams();
-    setStatus("Ищем подходящие варианты…", "loading");
+    setStatus("Сопоставляем участки с вашими параметрами…", "loading");
     app.querySelector("#search-results").innerHTML = "";
+    offset = 0;
+    items = [];
+    activeTab = "results";
     if (!token) {
       await runPreview(params);
       return;
     }
-    params.set("limit", "12");
+    await fetchResults(params, false);
+  }
+
+  async function fetchResults(params, append) {
+    params.set("limit", "9");
+    params.set("offset", append ? String(offset) : "0");
+    params.set("sort", sortMode);
     try {
       const payload = await api(`/api/public/widget/listings?${params.toString()}`);
-      renderResults(payload);
+      items = append ? uniqueItems([...items, ...(payload.items || [])]) : (payload.items || []);
+      total = payload.total || 0;
+      hasMore = Boolean(payload.has_more);
+      offset = items.length;
+      renderWorkspace();
+      refreshSavedStatuses();
     } catch (error) {
       if (error.status === 401) {
         clearToken();
@@ -127,6 +158,12 @@
     }
   }
 
+  async function loadMore() {
+    const button = app.querySelector("#load-more");
+    setBusy(button, true, "Загружаем…");
+    await fetchResults(paramsFromLastSearch(), true);
+  }
+
   async function runPreview(params, message = "") {
     try {
       lastPreview = await api(`/api/public/widget/preview?${params.toString()}`, { public: true });
@@ -134,27 +171,24 @@
         setStatus("Под эти параметры пока ничего нет. Попробуйте немного расширить поиск.", "empty");
         return;
       }
-      setStatus(`Нашли ${lastPreview.total}. Подтвердите телефон, чтобы открыть варианты.`, "ready");
+      setStatus(`Нашли ${lastPreview.total}. Подтвердите телефон, чтобы открыть подборку.`, "ready");
       renderPhoneGate(message);
-    } catch (error) {
-      setStatus(error.message, "error");
-    }
+    } catch (error) { setStatus(error.message, "error"); }
   }
 
   function renderPhoneGate(message = "") {
     renderBlurredCards();
     const gate = app.querySelector("#auth-gate");
     gate.innerHTML = `
-      <div class="lpf-kicker">Результаты готовы</div>
-      <h3>Откройте найденные участки</h3>
-      <p>Подтвердите телефон — это защищает каталог от автоматических запросов.</p>
+      <div class="lpf-kicker">Подборка готова</div>
+      <h3>Откройте найденные варианты</h3>
+      <p>Подтверждение телефона защищает каталог от автоматической выгрузки. Повторно вводить номер на этом устройстве не придётся 30 дней.</p>
       ${notice(message)}
       <form id="phone-form" class="lpf-gate-form">
         <label>Номер телефона<input name="phone" type="tel" autocomplete="tel" placeholder="+375 29 000-00-00" required></label>
-        <label class="lpf-consent"><input name="consent" type="checkbox" required><span>Соглашаюсь на обработку контактных данных и обратную связь. <a href="${safeUrl(config.privacyUrl)}" target="_blank" rel="noopener">Условия</a></span></label>
+        <label class="lpf-consent"><input name="consent" type="checkbox" required><span>Соглашаюсь на обработку номера для доступа к каталогу и обратной связи по подбору участка. <a href="${safeUrl(config.privacyUrl)}" target="_blank" rel="noopener">Условия</a></span></label>
         <button type="submit">Получить код</button>
-      </form>
-      <small>После подтверждения повторно вводить номер на этом устройстве не придётся 30 дней.</small>`;
+      </form>`;
     gate.querySelector("#phone-form").addEventListener("submit", requestCode);
   }
 
@@ -162,22 +196,11 @@
     const results = app.querySelector("#search-results");
     const count = Math.max(1, lastPreview.preview_cards || 0);
     results.className = "lpf-preview";
-    results.innerHTML = `
-      <div class="lpf-grid lpf-blurred" aria-hidden="true">
-        ${Array.from({ length: count }, () => blurredCard()).join("")}
-      </div>
-      <div class="lpf-gate" id="auth-gate"></div>`;
+    results.innerHTML = `<div class="lpf-grid lpf-blurred" aria-hidden="true">${Array.from({ length: count }, () => blurredCard()).join("")}</div><div class="lpf-gate" id="auth-gate"></div>`;
   }
 
   function blurredCard() {
-    return `<article class="lpf-card lpf-skeleton">
-      <div class="lpf-cardtop"><span class="lpf-source">KUFAR</span><span class="lpf-score">90 / 100</span></div>
-      <h3>Подходящий участок в выбранном направлении</h3>
-      <p class="lpf-location">Минская область, населённый пункт</p>
-      <div class="lpf-facts"><div><span>Цена</span><strong>$00 000</strong></div><div><span>Площадь</span><strong>00 сот.</strong></div><div><span>До МКАД</span><strong>00 км</strong></div></div>
-      <div class="lpf-utils"><span>✓ Коммуникации</span></div>
-      <div class="lpf-actions"><a>Открыть объявление</a><button type="button">Мне подходит</button></div>
-    </article>`;
+    return `<article class="lpf-card lpf-skeleton"><div class="lpf-cardtop"><span class="lpf-reference">LP-••••••••••</span><span class="lpf-score">90% совпадение</span></div><h3>Участок 00 сот. в выбранном районе</h3><p class="lpf-location">Примерное расположение</p><div class="lpf-facts"><div><span>Цена</span><strong>$00 000</strong></div><div><span>Площадь</span><strong>00 сот.</strong></div><div><span>До МКАД</span><strong>00 км</strong></div></div><div class="lpf-location-score">Локация <strong>00/100</strong></div><div class="lpf-actions"><button type="button">Подробнее</button><button type="button">Сохранить</button></div></article>`;
   }
 
   async function requestCode(event) {
@@ -188,35 +211,17 @@
     setBusy(button, true, "Отправляем…");
     try {
       const payload = await api("/api/public/widget/auth/request-code", {
-        method: "POST",
-        public: true,
-        body: {
-          phone: currentPhone,
-          consent: form.elements.consent.checked,
-          source_page: window.location.href,
-          utm: utmParams(),
-        },
+        method: "POST", public: true,
+        body: { phone: currentPhone, consent: form.elements.consent.checked, source_page: window.location.href, utm: utmParams() },
       });
       renderCodeGate(payload);
-    } catch (error) {
-      renderPhoneGate(error.message);
-    }
+    } catch (error) { renderPhoneGate(error.message); }
   }
 
   function renderCodeGate(payload, message = "") {
     renderBlurredCards();
     const gate = app.querySelector("#auth-gate");
-    gate.innerHTML = `
-      <button id="back-phone" class="lpf-back" type="button">← Изменить номер</button>
-      <div class="lpf-kicker">Подтверждение</div>
-      <h3>Введите код из SMS</h3>
-      <p>Отправили шестизначный код на ${html(payload.phone || currentPhone)}.</p>
-      ${payload.demo_code ? `<div class="lpf-demo">Демо-код: <strong>${html(payload.demo_code)}</strong></div>` : ""}
-      ${notice(message)}
-      <form id="code-form" class="lpf-gate-form">
-        <label>Код<input name="code" inputmode="numeric" autocomplete="one-time-code" maxlength="6" placeholder="000000" required></label>
-        <button type="submit">Открыть результаты</button>
-      </form>`;
+    gate.innerHTML = `<button id="back-phone" class="lpf-back" type="button">← Изменить номер</button><div class="lpf-kicker">Подтверждение</div><h3>Введите код из SMS</h3><p>Отправили шестизначный код на ${html(payload.phone || currentPhone)}.</p>${payload.demo_code ? `<div class="lpf-demo">Демо-код: <strong>${html(payload.demo_code)}</strong></div>` : ""}${notice(message)}<form id="code-form" class="lpf-gate-form"><label>Код<input name="code" inputmode="numeric" autocomplete="one-time-code" maxlength="6" placeholder="000000" required></label><button type="submit">Открыть подборку</button></form>`;
     gate.querySelector("#back-phone").addEventListener("click", () => renderPhoneGate());
     gate.querySelector("#code-form").addEventListener("submit", (event) => verifyCode(event, payload));
     gate.querySelector("input[name=code]").focus();
@@ -228,203 +233,255 @@
     const button = form.querySelector("button");
     setBusy(button, true, "Проверяем…");
     try {
-      const payload = await api("/api/public/widget/auth/verify-code", {
-        method: "POST",
-        public: true,
-        body: { phone: currentPhone, code: new FormData(form).get("code") },
-      });
+      const payload = await api("/api/public/widget/auth/verify-code", { method: "POST", public: true, body: { phone: currentPhone, code: new FormData(form).get("code") } });
       token = payload.token;
-      localStorage.setItem(storageKey, token);
+      localStorage.setItem(tokenKey, token);
       app.querySelector("#logout").hidden = false;
       await runSearch();
-    } catch (error) {
-      renderCodeGate(requestPayload, error.message);
-    }
+    } catch (error) { renderCodeGate(requestPayload, error.message); }
   }
 
-  function renderResults(payload) {
+  function renderWorkspace() {
     const results = app.querySelector("#search-results");
-    const items = payload.items || [];
-    results.className = "lpf-grid";
-    results.innerHTML = "";
-    if (!items.length) {
+    results.className = "lpf-workspace";
+    if (!items.length && !readSaved().length) {
       setStatus("Под эти параметры пока ничего нет. Попробуйте немного расширить поиск.", "empty");
+      results.innerHTML = "";
       return;
     }
-    setStatus(`Найдено ${payload.total}. Показываем лучшие варианты:`, "ready");
-    items.forEach((item) => results.appendChild(listingCard(item)));
+    setStatus(`Найдено ${total}. Оценка совпадения рассчитана по вашим параметрам.`, "success");
+    results.innerHTML = `<div class="lpf-toolbar"><div class="lpf-tabs" role="tablist">${tabButton("results", `Варианты ${total}`)}${tabButton("map", "Карта")}${tabButton("saved", `Сохранённые ${readSaved().length}`)}</div><label class="lpf-sort">Сортировка<select id="sort-mode"><option value="match">Лучшее совпадение</option><option value="price">Сначала дешевле</option><option value="distance">Сначала ближе</option><option value="newest">Сначала свежие</option></select></label></div><div id="lpf-tab-content"></div>`;
+    results.querySelector("#sort-mode").value = sortMode;
+    results.querySelector("#sort-mode").addEventListener("change", async (event) => {
+      sortMode = event.target.value;
+      offset = 0;
+      items = [];
+      await fetchResults(paramsFromLastSearch(), false);
+    });
+    results.querySelectorAll("[data-tab]").forEach((button) => button.addEventListener("click", () => { activeTab = button.dataset.tab; renderWorkspace(); }));
+    renderActiveTab();
   }
 
-  function listingCard(item) {
-    const card = document.createElement("article");
-    card.className = "lpf-card";
-    card.innerHTML = `
-      <div class="lpf-cardtop"><span class="lpf-source">${html(sourceName(item.source))}</span><span class="lpf-score">${html(item.score)} / 100</span></div>
-      <h3 title="${attr(item.title)}">${html(item.title)}</h3>
-      <p class="lpf-location" title="${attr(item.location || "Расположение уточняется")}">${html(item.location || "Расположение уточняется")}</p>
-      <div class="lpf-facts">
-        <div><span>Цена</span><strong>${item.price_usd == null ? "—" : `$${number(item.price_usd)}`}</strong></div>
-        <div><span>Площадь</span><strong>${item.area_sotok == null ? "—" : `${number(item.area_sotok)} сот.`}</strong></div>
-        <div><span>До МКАД</span><strong>${item.distance_mkad_km == null ? "—" : `${number(item.distance_mkad_km)} км`}</strong></div>
-      </div>
-      <div class="lpf-utils">${utility(item.electricity_kw ? `${number(item.electricity_kw)} кВт` : item.electricity, "Электричество")}${utility(item.gas, "Газ")}</div>
-      <div class="lpf-actions"><a href="${safeUrl(item.url)}" target="_blank" rel="noopener">Открыть объявление</a><button type="button" data-listing-id="${attr(item.id)}">Мне подходит</button></div>`;
-    card.querySelector("button").addEventListener("click", () => showInterestDialog(item));
-    return card;
+  function tabButton(name, label) { return `<button class="lpf-tab ${activeTab === name ? "active" : ""}" type="button" role="tab" data-tab="${name}">${html(label)}</button>`; }
+  function renderActiveTab() {
+    if (activeTab === "map") renderMap();
+    else if (activeTab === "saved") {
+      renderSaved();
+      refreshSavedStatuses();
+    } else renderResults();
   }
 
-  function showInterestDialog(item) {
+  function renderResults() {
+    const content = app.querySelector("#lpf-tab-content");
+    content.innerHTML = `<div class="lpf-grid">${items.map((item) => listingCard(item)).join("")}</div>${hasMore ? '<div class="lpf-more"><button id="load-more" type="button">Показать ещё</button></div>' : ""}`;
+    wireCards(content, items);
+    content.querySelector("#load-more")?.addEventListener("click", loadMore);
+  }
+
+  function listingCard(item, options = {}) {
+    const saved = isSaved(item.reference);
+    const compare = compareRefs.has(item.reference);
+    const unavailable = options.savedView && isUnavailable(item.reference);
+    const badge = unavailable
+      ? '<span class="lpf-availability">Снято</span>'
+      : `<span class="lpf-score">${html(item.match_score)}% совпадение</span>`;
+    return `<article class="lpf-card ${unavailable ? "lpf-unavailable" : ""}" data-card-ref="${attr(item.reference)}"><div class="lpf-cardtop"><span class="lpf-reference">${html(item.reference)}</span>${badge}</div>${unavailable ? '<div class="lpf-unavailable-note">Объявление больше не публикуется. Сохранённая карточка оставлена для истории.</div>' : ""}<h3 title="${attr(item.title)}">${html(item.title)}</h3><p class="lpf-location" title="${attr(item.location)}">≈ ${html(item.location)}</p><div class="lpf-facts"><div><span>Цена</span><strong>${item.price_usd == null ? "—" : `$${number(item.price_usd)}`}</strong></div><div><span>Площадь</span><strong>${item.area_sotok == null ? "—" : `${number(item.area_sotok)} сот.`}</strong></div><div><span>До МКАД</span><strong>${item.distance_mkad_km == null ? "—" : `${number(item.distance_mkad_km)} км`}</strong></div></div><div class="lpf-card-insights"><span class="lpf-location-score">Локация <strong>${item.location_score == null ? "изучается" : `${html(item.location_score)}/100`}</strong></span><span class="lpf-fresh">${freshness(item.last_seen_at)}</span></div><div class="lpf-utils">${utility(item.electricity, "Электричество")}${utility(item.gas, "Газ")}${utility(item.internet, "Интернет")}</div>${options.savedView ? `<label class="lpf-compare"><input type="checkbox" data-compare="${attr(item.reference)}" ${compare ? "checked" : ""}> Сравнить</label>` : ""}<div class="lpf-actions"><button class="lpf-secondary" type="button" data-details="${attr(item.reference)}">Подробнее</button><button type="button" data-save="${attr(item.reference)}">${saved ? "✓ Сохранено" : "♡ Сохранить"}</button></div></article>`;
+  }
+
+  function wireCards(scope, sourceItems) {
+    scope.querySelectorAll("[data-details]").forEach((button) => button.addEventListener("click", () => { const item = sourceItems.find((candidate) => candidate.reference === button.dataset.details) || findItem(button.dataset.details); if (item) showDetails(item); }));
+    scope.querySelectorAll("[data-save]").forEach((button) => button.addEventListener("click", () => { const item = sourceItems.find((candidate) => candidate.reference === button.dataset.save) || findItem(button.dataset.save); if (item) toggleSaved(item); }));
+    scope.querySelectorAll("[data-compare]").forEach((checkbox) => checkbox.addEventListener("change", () => toggleCompare(checkbox.dataset.compare, checkbox.checked)));
+  }
+
+  function showDetails(item) {
     closeDialog();
+    const unavailable = isUnavailable(item.reference);
     const dialog = document.createElement("div");
     dialog.id = "lpf-dialog";
     dialog.className = "lpf-dialog-layer";
-    dialog.innerHTML = `<div class="lpf-dialog" role="dialog" aria-modal="true" aria-labelledby="interest-title">
-      <button class="lpf-dialog-close" type="button" aria-label="Закрыть">×</button>
-      <div class="lpf-kicker">Понравился участок</div>
-      <h3 id="interest-title">Передать вариант специалисту?</h3>
-      <p>${html(item.title)}</p>
-      <form id="interest-form" class="lpf-gate-form">
-        <label>Как к вам обращаться? <span>необязательно</span><input name="name" maxlength="80" autocomplete="name" placeholder="Например, Илья"></label>
-        <button type="submit">Да, связаться со мной</button>
-      </form>
-      <small>Специалист увидит выбранный участок и параметры вашего поиска.</small>
-    </div>`;
+    const similar = similarItems(item).slice(0, 3);
+    dialog.innerHTML = `<div class="lpf-dialog lpf-detail" role="dialog" aria-modal="true" aria-labelledby="detail-title"><button class="lpf-dialog-close" type="button" aria-label="Закрыть">×</button><div class="lpf-detail-head"><div><div class="lpf-reference">${html(item.reference)}</div><h3 id="detail-title">${html(item.title)}</h3><p>≈ ${html(item.location)}</p></div><div class="lpf-big-score"><strong>${html(item.match_score)}%</strong><span>совпадение</span></div></div>${unavailable ? '<div class="lpf-unavailable-banner"><strong>Объявление снято с публикации</strong><span>Мы оставили сохранённую копию, чтобы вариант не исчез бесследно.</span></div>' : ""}<div class="lpf-detail-grid"><section><div class="lpf-section-title">Основные параметры</div>${detailFacts(item)}</section><section><div class="lpf-section-title">Почему подходит</div>${bulletList(item.match_reasons, "good")}${bulletList(item.warnings, "warning")}</section><section><div class="lpf-section-title">Коммуникации и участок</div>${detailUtilities(item)}</section><section><div class="lpf-section-title">Оценка локации</div>${locationDetail(item)}</section></div>${approximateMapActions(item)}${similar.length ? `<section class="lpf-similar"><div class="lpf-section-title">Похожие варианты</div><div class="lpf-similar-list">${similar.map((candidate) => `<button type="button" data-similar="${attr(candidate.reference)}"><strong>${html(candidate.reference)}</strong><span>${candidate.price_usd == null ? "Цена уточняется" : `$${number(candidate.price_usd)}`} · ${candidate.area_sotok == null ? "—" : `${number(candidate.area_sotok)} сот.`}</span></button>`).join("")}</div></section>` : ""}<div class="lpf-detail-actions"><button class="lpf-secondary" id="detail-close" type="button">Вернуться</button><button class="lpf-secondary" id="detail-save" type="button">${isSaved(item.reference) ? "✓ Сохранено" : "♡ Сохранить"}</button><button id="detail-help" type="button" ${unavailable || requestedRefs.has(item.reference) ? "disabled" : ""}>${unavailable ? "Объявление снято" : requestedRefs.has(item.reference) ? "✓ Запрос отправлен" : "Попросить специалиста проверить"}</button></div><div id="detail-request-status" aria-live="polite"></div><small>Сохранение остаётся только в вашем браузере. Специалист получит точное объявление и ваши параметры только после нажатия кнопки запроса.</small></div>`;
     root.appendChild(dialog);
     dialog.querySelector(".lpf-dialog-close").addEventListener("click", closeDialog);
-    dialog.querySelector("#interest-form").addEventListener("submit", (event) => saveInterest(event, item));
-    dialog.querySelector("input[name=name]").focus();
+    dialog.querySelector("#detail-close").addEventListener("click", closeDialog);
+    dialog.querySelector("#detail-save").addEventListener("click", () => toggleSaved(item, true));
+    dialog.querySelector("#detail-help").addEventListener("click", (event) => requestListingHelp(item, event.currentTarget));
+    dialog.querySelectorAll("[data-similar]").forEach((button) => button.addEventListener("click", () => { const candidate = findItem(button.dataset.similar); if (candidate) showDetails(candidate); }));
   }
 
-  async function saveInterest(event, item) {
-    event.preventDefault();
-    const form = event.currentTarget;
-    const button = form.querySelector("button");
-    setBusy(button, true, "Сохраняем…");
+  async function requestListingHelp(item, button) {
+    const status = root.getElementById("detail-request-status");
+    if (isUnavailable(item.reference)) {
+      status.className = "lpf-request-error";
+      status.textContent = "Это объявление уже снято с публикации.";
+      return;
+    }
+    setBusy(button, true, "Передаём специалисту…");
     try {
-      await api("/api/public/widget/interests", {
+      const payload = await api("/api/public/widget/interests", {
         method: "POST",
         body: {
-          listing_id: item.id,
-          name: new FormData(form).get("name"),
+          reference: item.reference,
           search_params: lastSearch,
           source_page: window.location.href,
         },
       });
-      const cardButton = app.querySelector(`[data-listing-id="${item.id}"]`);
-      cardButton.textContent = "✓ Вы выбрали этот участок";
-      cardButton.classList.add("selected");
-      cardButton.disabled = true;
-      const dialog = root.getElementById("lpf-dialog");
-      dialog.querySelector(".lpf-dialog").innerHTML = `
-        <div class="lpf-success-icon">✓</div>
-        <h3>Вариант передан специалисту</h3>
-        <p>Мы сохранили участок и параметры поиска. С вами смогут связаться и помочь оценить его под строительство.</p>
-        <button id="dialog-done" type="button">Вернуться к вариантам</button>`;
-      dialog.querySelector("#dialog-done").addEventListener("click", closeDialog);
+      requestedRefs.add(item.reference);
+      button.textContent = "✓ Запрос отправлен";
+      status.className = "lpf-request-success";
+      status.textContent = `${payload.message}. Менеджер увидит исходное объявление ${item.reference} и сможет связаться с вами.`;
     } catch (error) {
-      setBusy(button, false, "Да, связаться со мной");
-      setStatus(error.message, "error");
+      button.disabled = false;
+      button.textContent = "Повторить запрос";
+      status.className = "lpf-request-error";
+      status.textContent = error.message;
     }
   }
 
-  function closeDialog() {
-    root.getElementById("lpf-dialog")?.remove();
+  function detailFacts(item) {
+    return `<div class="lpf-detail-facts">${detailFact("Цена", item.price_usd == null ? "Неизвестно" : `$${number(item.price_usd)}`)}${detailFact("Площадь", item.area_sotok == null ? "Неизвестно" : `${number(item.area_sotok)} сот.`)}${detailFact("До МКАД", item.distance_mkad_km == null ? "Неизвестно" : `${number(item.distance_mkad_km)} км`)}${detailFact("Размеры", item.facade_m && item.depth_m ? `${number(item.facade_m)} × ${number(item.depth_m)} м` : "Неизвестно")}${detailFact("Назначение", item.purpose || "Уточнить")}${detailFact("Право", item.ownership || "Уточнить")}</div>`;
   }
+  function detailFact(label, value) { return `<div><span>${html(label)}</span><strong>${html(value)}</strong></div>`; }
+  function detailUtilities(item) {
+    const values = [["Электричество", item.electricity], ["Газ", item.gas], ["Вода", item.water], ["Канализация", item.sewerage], ["Интернет", item.internet], ["Дорога", item.road]];
+    return `<div class="lpf-utility-table">${values.map(([label, value]) => `<div><span>${html(label)}</span><strong class="${value ? "known" : "unknown"}">${html(value || "Нет данных")}</strong></div>`).join("")}</div>`;
+  }
+  function locationDetail(item) {
+    if (item.location_score == null) return '<p class="lpf-muted">Локация ещё изучается. Оценка появится после накопления данных.</p>';
+    return `<div class="lpf-location-summary"><strong>${html(item.location_score)}/100</strong><span>${html(item.location_verdict || "Есть данные для первичной оценки")}</span></div><p class="lpf-confidence">Достоверность: ${html(confidenceLabel(item.location_confidence))}${item.nearby_premium_houses ? ` · дорогих домов рядом: ${html(item.nearby_premium_houses)}` : ""}</p>${bulletList(item.location_signals, "good")}${bulletList(item.location_risks, "warning")}`;
+  }
+  function bulletList(values, kind) {
+    if (!values || !values.length) return "";
+    const icon = kind === "warning" ? "!" : "✓";
+    return `<ul class="lpf-bullets ${kind}">${values.map((value) => `<li><span>${icon}</span>${html(value)}</li>`).join("")}</ul>`;
+  }
+  function approximateMapActions(item) {
+    if (item.latitude == null || item.longitude == null) return "";
+    return `<section class="lpf-route-box"><div><div class="lpf-section-title">Примерное расположение</div><p>Точка округлена примерно до района. Точный адрес менеджер проверит по коду ${html(item.reference)}.</p></div><div><a href="${mapRouteUrl(item, "yandex")}" target="_blank" rel="noopener">Маршрут в Яндекс</a><a class="lpf-alt-link" href="${mapRouteUrl(item, "google")}" target="_blank" rel="noopener">Google Maps</a></div></section>`;
+  }
+  function similarItems(item) { return items.filter((candidate) => candidate.reference !== item.reference).sort((left, right) => similarity(item, left) - similarity(item, right)); }
+  function similarity(base, candidate) { return Math.abs((base.price_usd || 0) - (candidate.price_usd || 0)) / 2000 + Math.abs((base.area_sotok || 0) - (candidate.area_sotok || 0)) * 2 + Math.abs((base.distance_mkad_km || 0) - (candidate.distance_mkad_km || 0)); }
+
+  function renderMap() {
+    const content = app.querySelector("#lpf-tab-content");
+    const plotted = items.filter((item) => item.latitude != null && item.longitude != null);
+    if (!plotted.length) { content.innerHTML = '<div class="lpf-empty">Для найденных вариантов пока нет координат.</div>'; return; }
+    const focused = plotted.find((item) => item.reference === mapFocusRef) || plotted[0];
+    mapFocusRef = focused.reference;
+    content.innerHTML = `<div class="lpf-map-layout"><aside class="lpf-map-list"><div class="lpf-map-provider"><button data-provider="yandex" class="${mapProvider === "yandex" ? "active" : ""}" type="button">Яндекс</button><button data-provider="google" class="${mapProvider === "google" ? "active" : ""}" type="button">Google</button></div>${plotted.map((item) => `<button class="lpf-map-item ${item.reference === focused.reference ? "active" : ""}" data-map-focus="${attr(item.reference)}" type="button"><strong>${html(item.reference)}</strong><span>${html(item.location)}</span><small>${item.price_usd == null ? "Цена уточняется" : `$${number(item.price_usd)}`} · ${html(item.match_score)}%</small></button>`).join("")}</aside><section class="lpf-map-canvas"><iframe title="Примерная карта участков" loading="lazy" referrerpolicy="no-referrer-when-downgrade" src="${attr(mapEmbedUrl(plotted, focused))}"></iframe><div class="lpf-map-note">Показано примерное расположение · координаты округлены</div><a class="lpf-map-route" href="${mapRouteUrl(focused, mapProvider)}" target="_blank" rel="noopener">Построить маршрут в ${mapProvider === "yandex" ? "Яндекс Картах" : "Google Maps"}</a></section></div>`;
+    content.querySelectorAll("[data-provider]").forEach((button) => button.addEventListener("click", () => { mapProvider = button.dataset.provider; localStorage.setItem(mapKey, mapProvider); renderMap(); }));
+    content.querySelectorAll("[data-map-focus]").forEach((button) => button.addEventListener("click", () => { mapFocusRef = button.dataset.mapFocus; renderMap(); }));
+  }
+  function mapEmbedUrl(plotted, focused) {
+    if (mapProvider === "google") return `https://www.google.com/maps?q=${focused.latitude},${focused.longitude}&z=11&output=embed`;
+    const points = plotted.slice(0, 20).map((item) => `${item.longitude},${item.latitude},pm2rdm`).join("~");
+    return `https://yandex.ru/map-widget/v1/?ll=${focused.longitude}%2C${focused.latitude}&z=10&pt=${encodeURIComponent(points)}`;
+  }
+  function mapRouteUrl(item, provider) { if (provider === "google") return `https://www.google.com/maps/dir/?api=1&destination=${item.latitude},${item.longitude}`; return `https://yandex.ru/maps/?rtext=~${item.latitude},${item.longitude}&rtt=auto`; }
+
+  function renderSaved() {
+    const content = app.querySelector("#lpf-tab-content");
+    const saved = readSaved();
+    if (!saved.length) { content.innerHTML = '<div class="lpf-empty"><strong>Пока ничего не сохранено</strong><span>Нажмите «Сохранить» на понравившемся варианте. Он останется на этом устройстве.</span></div>'; return; }
+    compareRefs = new Set([...compareRefs].filter((reference) => saved.some((item) => item.reference === reference)));
+    const unavailableCount = saved.filter((item) => isUnavailable(item.reference)).length;
+    const checkText = savedStatusError
+      ? savedStatusError
+      : savedStatusPromise
+        ? "Проверяем актуальность объявлений…"
+        : savedStatusCheckedAt
+          ? `${unavailableCount ? `Снято с публикации: ${unavailableCount}. ` : ""}Проверено ${shortTime(savedStatusCheckedAt)}.`
+          : "Актуальность ещё не проверена.";
+    content.innerHTML = `<div class="lpf-saved-intro"><div><strong>Ваш список</strong><span>Карточки хранятся только в этом браузере. Сервер получает лишь анонимные коды для проверки актуальности.</span><span class="${savedStatusError ? "lpf-saved-error" : ""}">${html(checkText)}</span></div><div class="lpf-saved-tools"><button id="refresh-saved" class="lpf-secondary" type="button" ${savedStatusPromise ? "disabled" : ""}>${savedStatusPromise ? "Проверяем…" : "Проверить"}</button><button id="clear-saved" class="lpf-text-button" type="button">Очистить список</button></div></div>${compareRefs.size >= 2 ? comparison(saved.filter((item) => compareRefs.has(item.reference))) : '<div class="lpf-compare-hint">Выберите от двух до четырёх участков, чтобы сравнить их.</div>'}<div class="lpf-grid">${saved.map((item) => listingCard(item, { savedView: true })).join("")}</div>`;
+    wireCards(content, saved);
+    content.querySelector("#refresh-saved").addEventListener("click", () => refreshSavedStatuses(true));
+    content.querySelector("#clear-saved").addEventListener("click", () => { localStorage.removeItem(savedKey); compareRefs.clear(); savedStatuses = new Map(); savedStatusCheckedAt = 0; renderWorkspace(); });
+  }
+  function comparison(selected) {
+    const rows = [["Актуальность", (item) => isUnavailable(item.reference) ? "Снято" : "Актуально"], ["Цена", (item) => item.price_usd == null ? "—" : `$${number(item.price_usd)}`], ["Площадь", (item) => item.area_sotok == null ? "—" : `${number(item.area_sotok)} сот.`], ["До МКАД", (item) => item.distance_mkad_km == null ? "—" : `${number(item.distance_mkad_km)} км`], ["Совпадение", (item) => `${item.match_score}%`], ["Локация", (item) => item.location_score == null ? "—" : `${item.location_score}/100`], ["Электричество", (item) => item.electricity || "—"], ["Газ", (item) => item.gas || "—"]];
+    return `<div class="lpf-comparison"><div class="lpf-comparison-grid lpf-comparison-head"><span>Параметр</span>${selected.map((item) => `<strong>${html(item.reference)}</strong>`).join("")}</div>${rows.map(([label, getter]) => `<div class="lpf-comparison-grid"><span>${html(label)}</span>${selected.map((item) => `<strong>${html(getter(item))}</strong>`).join("")}</div>`).join("")}</div>`;
+  }
+  function toggleCompare(reference, checked) {
+    if (checked && compareRefs.size >= 4) { setStatus("Для сравнения можно выбрать не больше четырёх вариантов.", "error"); renderSaved(); return; }
+    if (checked) compareRefs.add(reference); else compareRefs.delete(reference);
+    renderSaved();
+  }
+  function toggleSaved(item, fromDialog = false) {
+    const saved = readSaved();
+    const index = saved.findIndex((candidate) => candidate.reference === item.reference);
+    if (index >= 0) {
+      saved.splice(index, 1);
+    } else {
+      saved.unshift({ ...item, saved_at: new Date().toISOString() });
+      savedStatuses.set(item.reference, { reference: item.reference, active: true, last_seen_at: item.last_seen_at });
+    }
+    localStorage.setItem(savedKey, JSON.stringify(saved.slice(0, 50)));
+    if (fromDialog) showDetails(item); else renderWorkspace();
+  }
+  function readSaved() { try { const value = JSON.parse(localStorage.getItem(savedKey) || "[]"); return Array.isArray(value) ? value : []; } catch (_) { return []; } }
+  function isSaved(reference) { return readSaved().some((item) => item.reference === reference); }
+  function isUnavailable(reference) { return savedStatuses.get(reference)?.active === false; }
+  function findItem(reference) { return items.find((item) => item.reference === reference) || readSaved().find((item) => item.reference === reference); }
+  function uniqueItems(values) { return [...new Map(values.map((item) => [item.reference, item])).values()]; }
+  function shortTime(value) { return new Intl.DateTimeFormat("ru-RU", { hour: "2-digit", minute: "2-digit" }).format(new Date(value)); }
+
+  async function refreshSavedStatuses(force = false) {
+    const saved = readSaved();
+    if (!token || !saved.length) return;
+    if (savedStatusPromise) return savedStatusPromise;
+    if (!force && savedStatusCheckedAt && Date.now() - savedStatusCheckedAt < 60_000) return;
+    savedStatusError = "";
+    savedStatusPromise = api("/api/public/widget/statuses", {
+      method: "POST",
+      body: { references: saved.map((item) => item.reference) },
+    });
+    if (activeTab === "saved") renderSaved();
+    try {
+      const payload = await savedStatusPromise;
+      savedStatuses = new Map((payload.items || []).map((item) => [item.reference, item]));
+      savedStatusCheckedAt = Date.now();
+    } catch (error) {
+      savedStatusError = "Не удалось проверить актуальность. Попробуйте ещё раз.";
+      if (error.status === 401) clearToken();
+    } finally {
+      savedStatusPromise = null;
+      if (activeTab === "saved" && app.querySelector("#lpf-tab-content")) renderSaved();
+    }
+  }
+  function closeDialog() { root.getElementById("lpf-dialog")?.remove(); }
 
   async function api(path, options = {}) {
     const headers = { "Content-Type": "application/json" };
     if (token && !options.public) headers.Authorization = `Bearer ${token}`;
-    const response = await fetch(`${config.apiBase}${path}`, {
-      method: options.method || "GET",
-      headers,
-      body: options.body ? JSON.stringify(options.body) : undefined,
-    });
+    const response = await fetch(`${config.apiBase}${path}`, { method: options.method || "GET", headers, body: options.body ? JSON.stringify(options.body) : undefined });
     let payload = {};
     try { payload = await response.json(); } catch (_) { /* no body */ }
-    if (!response.ok) {
-      const error = new Error(payload.detail || "Не удалось выполнить запрос. Попробуйте ещё раз.");
-      error.status = response.status;
-      throw error;
-    }
+    if (!response.ok) { const error = new Error(payload.detail || "Не удалось выполнить запрос. Попробуйте ещё раз."); error.status = response.status; throw error; }
     return payload;
   }
-
-  function clearToken() {
-    token = "";
-    localStorage.removeItem(storageKey);
-    sessionStorage.removeItem(storageKey);
-  }
-
-  function setStatus(text, kind) {
-    const node = app.querySelector("#search-status");
-    if (!node) return;
-    node.className = `lpf-status ${kind || ""}`;
-    node.textContent = text;
-  }
-
-  function setBusy(button, busy, label) {
-    button.disabled = busy;
-    button.textContent = label;
-  }
-
-  function notice(message) {
-    return message ? `<div class="lpf-notice">${html(message)}</div>` : "";
-  }
-
-  function utility(value, label) {
-    return value ? `<span>✓ ${html(label)}: ${html(value)}</span>` : "";
-  }
-
-  function utmParams() {
-    const result = {};
-    new URLSearchParams(window.location.search).forEach((value, key) => {
-      if (key.startsWith("utm_")) result[key] = value;
-    });
-    return result;
-  }
-
-  function sourceName(value) {
-    return ({ kufar: "Kufar", realt: "Realt", rlt_auction: "RLT", e_auction: "e-auction" })[value] || value || "Источник";
-  }
-
-  function number(value) {
-    return new Intl.NumberFormat("ru-RU", { maximumFractionDigits: 1 }).format(value);
-  }
-
-  function html(value) {
-    return String(value == null ? "" : value).replace(/[&<>"']/g, (char) => ({ "&": "&amp;", "<": "&lt;", ">": "&gt;", '"': "&quot;", "'": "&#39;" })[char]);
-  }
-
-  function attr(value) {
-    return html(value);
-  }
-
-  function safeUrl(value) {
-    if (value === "#") return "#";
-    try {
-      const parsed = new URL(value, window.location.href);
-      return ["http:", "https:"].includes(parsed.protocol) ? attr(parsed.href) : "#";
-    } catch (_) {
-      return "#";
-    }
-  }
+  function clearToken() { token = ""; savedStatuses = new Map(); savedStatusCheckedAt = 0; localStorage.removeItem(tokenKey); sessionStorage.removeItem(tokenKey); }
+  function setStatus(text, kind) { const node = app.querySelector("#search-status"); if (!node) return; node.className = `lpf-status ${kind || ""}`; node.textContent = text; }
+  function setBusy(button, busy, label) { if (!button) return; button.disabled = busy; button.textContent = label; }
+  function notice(message) { return message ? `<div class="lpf-notice">${html(message)}</div>` : ""; }
+  function utility(value, label) { return value ? `<span>✓ ${html(label)}: ${html(value)}</span>` : ""; }
+  function confidenceLabel(value) { return ({ high: "высокая", medium: "средняя", low: "предварительная" })[value] || "предварительная"; }
+  function freshness(value) { if (!value) return "Дата уточняется"; const days = Math.floor((Date.now() - new Date(value).getTime()) / 86400000); if (days <= 0) return "Проверено сегодня"; if (days === 1) return "Проверено вчера"; return `Проверено ${days} дн. назад`; }
+  function utmParams() { const result = {}; new URLSearchParams(window.location.search).forEach((value, key) => { if (key.startsWith("utm_")) result[key] = value; }); return result; }
+  function number(value) { return new Intl.NumberFormat("ru-RU", { maximumFractionDigits: 1 }).format(value); }
+  function html(value) { return String(value == null ? "" : value).replace(/[&<>"']/g, (char) => ({ "&": "&amp;", "<": "&lt;", ">": "&gt;", '"': "&quot;", "'": "&#39;" })[char]); }
+  function attr(value) { return html(value); }
+  function safeUrl(value) { if (value === "#") return "#"; try { const parsed = new URL(value, window.location.href); return ["http:", "https:"].includes(parsed.protocol) ? attr(parsed.href) : "#"; } catch (_) { return "#"; } }
 
   function styles() {
     return `
-      :host{--accent:${config.accent};--ink:#121212;--muted:#6c6c69;--paper:#f4f4f1;display:block;color:var(--ink);font-family:Inter,Arial,sans-serif}
-      *{box-sizing:border-box}.lpf-shell{position:relative;background:var(--paper);border:1px solid #deded9;border-radius:28px;box-shadow:0 24px 70px rgba(0,0,0,.12);overflow:hidden}.lpf-kicker{text-transform:uppercase;letter-spacing:.14em;font-size:11px;font-weight:800;color:#a26300;margin-bottom:12px}
-      h2{font-size:clamp(30px,5vw,48px);font-weight:650;line-height:1.04;letter-spacing:-.035em;text-transform:uppercase;margin:0 0 17px}h3{font-size:22px;font-weight:750;line-height:1.12;margin:15px 0 8px}
-      input{width:100%;height:52px;border:1px solid #d4d4cf;border-radius:12px;background:#fff;color:var(--ink);font:inherit;font-size:15px;padding:0 15px;outline:none}input:focus{border-color:var(--accent);box-shadow:0 0 0 3px color-mix(in srgb,var(--accent) 18%,transparent)}
-      button,.lpf-actions a{border:0;border-radius:999px;min-height:48px;padding:12px 20px;font:inherit;font-size:13px;font-weight:750;cursor:pointer;text-decoration:none;text-align:center;display:inline-flex;align-items:center;justify-content:center;transition:transform .18s ease,filter .18s ease}button{background:var(--accent);color:#171717}button:hover,.lpf-actions a:hover{filter:brightness(.96);transform:translateY(-1px)}button:disabled{cursor:default;opacity:.76;transform:none}
-      .lpf-header{padding:38px 38px 28px;display:flex;align-items:start;justify-content:space-between;gap:24px;background:#fff;border-bottom:1px solid #deded9}.lpf-header h2{font-size:clamp(28px,4vw,42px);margin:0;max-width:760px}.lpf-brand{font-size:12px;font-weight:850;background:#171717;color:#fff;border-radius:8px;padding:12px 15px;white-space:nowrap;letter-spacing:.04em}.lpf-brand:before{content:"▰";color:var(--accent);margin-right:7px}
-      .lpf-filters{display:grid;grid-template-columns:2fr repeat(4,1fr);gap:14px;padding:26px 38px;background:#1b1b1b;color:#fff;border-bottom:1px solid #303030}.lpf-filters label,.lpf-gate-form label{display:grid;gap:7px;font-size:12px;font-weight:650;color:inherit}.lpf-filters button{grid-column:5}.lpf-check{display:flex!important;flex-direction:row;align-items:center;gap:8px!important;font-weight:600!important;color:#d3d3cf!important}.lpf-check input,.lpf-consent input{width:18px;height:18px;accent-color:var(--accent);margin:1px 0}
-      .lpf-status{margin:24px 38px 0;color:var(--muted);font-size:13px}.lpf-status.error{color:#a12f2a}.lpf-status.success{color:#493800;background:#fff1be;border-left:4px solid var(--accent);padding:13px 15px;border-radius:8px}
-      .lpf-grid{display:grid;grid-template-columns:repeat(3,minmax(0,1fr));grid-auto-rows:1fr;align-items:stretch;gap:18px;padding:20px 38px 38px}.lpf-card{display:flex;flex-direction:column;height:100%;min-height:398px;background:#fff;border:1px solid #dadad5;border-radius:24px;padding:21px;min-width:0}.lpf-cardtop{display:flex;justify-content:space-between;gap:12px}.lpf-source{font-size:10px;font-weight:900;letter-spacing:.12em;text-transform:uppercase;color:#a26300}.lpf-score{font-size:11px;font-weight:800;background:#171717;color:#fff;padding:6px 9px;border-radius:999px;white-space:nowrap}.lpf-card h3{height:50px;display:-webkit-box;-webkit-box-orient:vertical;-webkit-line-clamp:2;overflow:hidden;margin-bottom:8px}.lpf-location{height:20px;white-space:nowrap;overflow:hidden;text-overflow:ellipsis;color:var(--muted);font-size:13px;margin:0 0 17px}.lpf-facts{display:grid;grid-template-columns:repeat(3,1fr);gap:8px;border-block:1px solid #e8e8e3;padding:15px 0}.lpf-facts span{display:block;color:#898985;font-size:10px;margin-bottom:5px}.lpf-facts strong{display:block;font-size:14px;white-space:nowrap;overflow:hidden;text-overflow:ellipsis}.lpf-utils{display:flex;align-content:flex-start;gap:7px;flex-wrap:wrap;height:52px;overflow:hidden;padding:13px 0 7px}.lpf-utils span{font-size:10px;background:#f0f0ed;border-radius:999px;padding:7px 9px;white-space:nowrap}.lpf-actions{display:grid;gap:9px;margin-top:auto}.lpf-actions a{background:#fff;color:#171717;border:1px solid #171717;font-size:12px}.lpf-actions button{font-size:12px}.lpf-actions button.selected{background:#171717;color:#fff}
-      .lpf-preview{position:relative;min-height:500px}.lpf-blurred{filter:blur(8px);user-select:none;pointer-events:none;opacity:.58}.lpf-skeleton{color:#4e4e4b}.lpf-gate{position:absolute;z-index:2;left:50%;top:50%;transform:translate(-50%,-50%);width:min(520px,calc(100% - 40px));background:#191919;color:#fff;border:1px solid #343434;border-radius:24px;padding:30px;box-shadow:0 24px 80px rgba(0,0,0,.35)}.lpf-gate h3{font-size:27px;text-transform:uppercase;margin:0 0 10px}.lpf-gate>p,.lpf-dialog>p{color:#b8b8b3;font-size:14px;line-height:1.5;margin:0 0 20px}.lpf-gate>small,.lpf-dialog>small{display:block;color:#8e8e89;font-size:10px;line-height:1.45;margin-top:12px}.lpf-gate-form{display:grid;gap:13px}.lpf-consent{grid-template-columns:20px 1fr!important;align-items:start;font-weight:400!important;line-height:1.45;color:#c1c1bc!important}.lpf-consent a,.lpf-link{color:#b17700}.lpf-notice,.lpf-demo{padding:12px 14px;border-radius:10px;margin:0 0 14px;font-size:12px}.lpf-notice{background:#4a2421;color:#ffd3cf}.lpf-demo{background:#302c1e;color:#ffe395}.lpf-back,.lpf-link{padding:0;min-height:auto;background:none;border:0;font-weight:700}.lpf-back{color:#aaa9a5;margin-bottom:18px}
-      .lpf-bottom{display:flex;justify-content:space-between;align-items:center;padding:0 38px 26px;color:#7d7d79;font-size:11px}.lpf-bottom .lpf-link{margin:0}.lpf-bottom button[hidden]{display:none}
-      .lpf-dialog-layer{position:fixed;z-index:2147483000;inset:0;background:rgba(0,0,0,.66);display:grid;place-items:center;padding:20px}.lpf-dialog{position:relative;width:min(500px,100%);background:#191919;color:#fff;border-radius:24px;padding:32px;box-shadow:0 30px 100px rgba(0,0,0,.5)}.lpf-dialog h3{font-size:27px;text-transform:uppercase;margin:0 28px 10px 0}.lpf-dialog-close{position:absolute;right:18px;top:16px;background:transparent;color:#aaa;min-height:32px;width:32px;padding:0;font-size:25px}.lpf-gate-form label span{font-weight:400;color:#999}.lpf-success-icon{width:52px;height:52px;border-radius:50%;display:grid;place-items:center;background:var(--accent);color:#171717;font-size:25px;font-weight:900;margin-bottom:20px}.lpf-dialog>button{width:100%;margin-top:8px}
-      @media(max-width:980px){.lpf-filters{grid-template-columns:repeat(2,1fr)}.lpf-filters button{grid-column:auto}.lpf-grid{grid-template-columns:repeat(2,1fr)}}
-      @media(max-width:640px){.lpf-shell{border-radius:18px}.lpf-header,.lpf-filters,.lpf-grid{padding-left:20px;padding-right:20px}.lpf-header{display:block}.lpf-brand{display:inline-block;margin-top:18px}.lpf-filters{grid-template-columns:1fr}.lpf-grid{grid-template-columns:1fr}.lpf-status{margin-left:20px;margin-right:20px}.lpf-bottom{padding-left:20px;padding-right:20px}.lpf-facts strong{font-size:13px}.lpf-gate{position:absolute;top:24px;transform:translateX(-50%);padding:24px}.lpf-preview{min-height:590px}.lpf-dialog{padding:26px}}
+      :host{--accent:${config.accent};--ink:#121212;--muted:#6c6c69;--paper:#f4f4f1;display:block;color:var(--ink);font-family:Inter,Arial,sans-serif}*{box-sizing:border-box}.lpf-shell{position:relative;background:var(--paper);border:1px solid #deded9;border-radius:28px;box-shadow:0 24px 70px rgba(0,0,0,.12);overflow:hidden}.lpf-kicker{text-transform:uppercase;letter-spacing:.14em;font-size:11px;font-weight:800;color:#a26300;margin-bottom:12px}h2{font-size:clamp(30px,5vw,48px);font-weight:650;line-height:1.04;letter-spacing:-.035em;text-transform:uppercase;margin:0}h3{font-size:22px;font-weight:750;line-height:1.12;margin:15px 0 8px}p{line-height:1.5}input,select{width:100%;height:52px;border:1px solid #d4d4cf;border-radius:12px;background:#fff;color:var(--ink);font:inherit;font-size:15px;padding:0 15px;outline:none}input:focus,select:focus{border-color:var(--accent);box-shadow:0 0 0 3px color-mix(in srgb,var(--accent) 18%,transparent)}button,.lpf-route-box a,.lpf-map-route{border:0;border-radius:999px;min-height:46px;padding:11px 19px;font:inherit;font-size:13px;font-weight:750;cursor:pointer;text-decoration:none;text-align:center;display:inline-flex;align-items:center;justify-content:center;transition:transform .18s ease,filter .18s ease}button{background:var(--accent);color:#171717}button:hover,.lpf-route-box a:hover,.lpf-map-route:hover{filter:brightness(.96);transform:translateY(-1px)}button:disabled{cursor:default;opacity:.7;transform:none}
+      .lpf-header{padding:38px 38px 28px;display:flex;align-items:start;justify-content:space-between;gap:24px;background:#fff;border-bottom:1px solid #deded9}.lpf-header h2{font-size:clamp(28px,4vw,42px);max-width:780px}.lpf-brand{font-size:12px;font-weight:850;background:#171717;color:#fff;border-radius:8px;padding:12px 15px;white-space:nowrap;letter-spacing:.04em}.lpf-brand:before{content:"▰";color:var(--accent);margin-right:7px}.lpf-filters{display:grid;grid-template-columns:2fr repeat(4,1fr);gap:14px;padding:26px 38px;background:#1b1b1b;color:#fff;border-bottom:1px solid #303030}.lpf-filters label,.lpf-gate-form label{display:grid;gap:7px;font-size:12px;font-weight:650;color:inherit}.lpf-filters button{grid-column:5}.lpf-check{display:flex!important;flex-direction:row;align-items:center;gap:8px!important;font-weight:600!important;color:#d3d3cf!important}.lpf-check input,.lpf-consent input,.lpf-compare input{width:18px;height:18px;accent-color:var(--accent);margin:1px 0}.lpf-status{margin:24px 38px 0;color:var(--muted);font-size:13px}.lpf-status.error{color:#a12f2a}.lpf-status.success{color:#493800;background:#fff1be;border-left:4px solid var(--accent);padding:13px 15px;border-radius:8px}
+      .lpf-workspace{padding-top:17px}.lpf-toolbar{display:flex;align-items:center;justify-content:space-between;gap:20px;padding:0 38px 4px}.lpf-tabs{display:flex;gap:6px;background:#deded8;border-radius:999px;padding:5px}.lpf-tab{background:transparent;min-height:38px;padding:8px 15px;color:#555;font-size:12px}.lpf-tab.active{background:#171717;color:#fff}.lpf-sort{display:flex;align-items:center;gap:9px;color:#777;font-size:11px}.lpf-sort select{height:40px;width:190px;font-size:12px;padding:0 12px;border-radius:999px}.lpf-grid{display:grid;grid-template-columns:repeat(3,minmax(0,1fr));grid-auto-rows:1fr;align-items:stretch;gap:18px;padding:20px 38px 38px}.lpf-card{display:flex;flex-direction:column;height:100%;min-height:425px;background:#fff;border:1px solid #dadad5;border-radius:24px;padding:21px;min-width:0}.lpf-card.lpf-unavailable{border-color:#d9a7a2;background:#fffafa}.lpf-cardtop{display:flex;justify-content:space-between;gap:12px}.lpf-reference{font-size:10px;font-weight:900;letter-spacing:.1em;color:#8c5b0a}.lpf-score,.lpf-availability{font-size:11px;font-weight:800;color:#fff;padding:6px 9px;border-radius:999px;white-space:nowrap}.lpf-score{background:#171717}.lpf-availability{background:#9d342f}.lpf-unavailable-note{margin-top:12px;padding:9px 11px;border-radius:10px;background:#f5dedb;color:#7f2924;font-size:10px;line-height:1.35}.lpf-card h3{height:50px;display:-webkit-box;-webkit-box-orient:vertical;-webkit-line-clamp:2;overflow:hidden;margin-bottom:8px}.lpf-location{height:20px;white-space:nowrap;overflow:hidden;text-overflow:ellipsis;color:var(--muted);font-size:13px;margin:0 0 17px}.lpf-facts{display:grid;grid-template-columns:repeat(3,1fr);gap:8px;border-block:1px solid #e8e8e3;padding:15px 0}.lpf-facts span{display:block;color:#898985;font-size:10px;margin-bottom:5px}.lpf-facts strong{display:block;font-size:14px;white-space:nowrap;overflow:hidden;text-overflow:ellipsis}.lpf-card-insights{display:flex;justify-content:space-between;gap:8px;padding:12px 0 2px;font-size:10px;color:#777}.lpf-location-score strong{color:#171717}.lpf-utils{display:flex;align-content:flex-start;gap:7px;flex-wrap:wrap;height:55px;overflow:hidden;padding:10px 0 7px}.lpf-utils span{font-size:9px;background:#f0f0ed;border-radius:999px;padding:7px 8px;white-space:nowrap}.lpf-actions{display:grid;grid-template-columns:1fr 1fr;gap:9px;margin-top:auto}.lpf-secondary{background:#fff!important;color:#171717!important;border:1px solid #171717!important}.lpf-compare{display:flex;align-items:center;gap:7px;font-size:11px;margin:2px 0 10px}.lpf-more{text-align:center;padding:0 38px 38px}.lpf-more button{min-width:220px}
+      .lpf-preview{position:relative;min-height:540px}.lpf-blurred{filter:blur(8px);user-select:none;pointer-events:none;opacity:.58}.lpf-skeleton{color:#4e4e4b}.lpf-gate{position:absolute;z-index:2;left:50%;top:50%;transform:translate(-50%,-50%);width:min(520px,calc(100% - 40px));background:#191919;color:#fff;border:1px solid #343434;border-radius:24px;padding:30px;box-shadow:0 24px 80px rgba(0,0,0,.35)}.lpf-gate h3{font-size:27px;text-transform:uppercase;margin:0 0 10px}.lpf-gate>p{color:#b8b8b3;font-size:14px;margin:0 0 20px}.lpf-gate-form{display:grid;gap:13px}.lpf-consent{grid-template-columns:20px 1fr!important;align-items:start;font-weight:400!important;line-height:1.45;color:#c1c1bc!important}.lpf-consent a,.lpf-link{color:#b17700}.lpf-notice,.lpf-demo{padding:12px 14px;border-radius:10px;margin:0 0 14px;font-size:12px}.lpf-notice{background:#4a2421;color:#ffd3cf}.lpf-demo{background:#302c1e;color:#ffe395}.lpf-back,.lpf-link,.lpf-text-button{padding:0;min-height:auto;background:none;border:0;font-weight:700}.lpf-back{color:#aaa9a5;margin-bottom:18px}.lpf-bottom{display:flex;justify-content:space-between;align-items:center;padding:0 38px 26px;color:#7d7d79;font-size:11px}.lpf-bottom button[hidden]{display:none}
+      .lpf-dialog-layer{position:fixed;z-index:2147483000;inset:0;background:rgba(0,0,0,.7);display:grid;place-items:center;padding:20px}.lpf-dialog{position:relative;width:min(880px,100%);max-height:calc(100vh - 40px);overflow:auto;background:#f4f4f1;color:#171717;border-radius:26px;padding:30px;box-shadow:0 30px 100px rgba(0,0,0,.5)}.lpf-dialog-close{position:absolute;z-index:2;right:18px;top:16px;background:#171717;color:#fff;min-height:34px;width:34px;padding:0;font-size:22px}.lpf-detail-head{display:flex;justify-content:space-between;gap:24px;padding:4px 50px 24px 0;border-bottom:1px solid #d7d7d1}.lpf-detail-head h3{font-size:30px;margin:9px 0 5px;max-width:620px}.lpf-detail-head p{font-size:13px;color:#777;margin:0}.lpf-big-score{min-width:112px;height:90px;border-radius:18px;background:#171717;color:#fff;display:grid;place-content:center;text-align:center}.lpf-big-score strong{font-size:29px}.lpf-big-score span{font-size:9px;text-transform:uppercase;letter-spacing:.08em;color:#bbb}.lpf-unavailable-banner{display:flex;justify-content:space-between;gap:16px;margin-top:16px;padding:13px 15px;border-radius:12px;background:#f5dedb;color:#7f2924}.lpf-unavailable-banner strong{font-size:12px}.lpf-unavailable-banner span{font-size:10px}.lpf-detail-grid{display:grid;grid-template-columns:1fr 1fr;gap:16px;padding:18px 0}.lpf-detail-grid>section,.lpf-similar{background:#fff;border:1px solid #dddcd6;border-radius:18px;padding:19px}.lpf-section-title{font-size:11px;font-weight:900;text-transform:uppercase;letter-spacing:.09em;margin-bottom:14px}.lpf-detail-facts{display:grid;grid-template-columns:1fr 1fr;gap:13px}.lpf-detail-facts span{display:block;font-size:9px;color:#888;margin-bottom:4px}.lpf-detail-facts strong{font-size:12px}.lpf-bullets{list-style:none;padding:0;margin:8px 0;display:grid;gap:7px}.lpf-bullets li{display:grid;grid-template-columns:19px 1fr;gap:7px;font-size:11px;line-height:1.35}.lpf-bullets li span{display:grid;place-items:center;width:18px;height:18px;border-radius:50%;background:#dcead5;color:#315125;font-weight:900}.lpf-bullets.warning li span{background:#fff0c7;color:#7b5700}.lpf-utility-table{display:grid;grid-template-columns:1fr 1fr;gap:10px}.lpf-utility-table div{border-bottom:1px solid #eee;padding-bottom:8px}.lpf-utility-table span{display:block;font-size:9px;color:#888}.lpf-utility-table strong{font-size:11px}.lpf-utility-table .unknown{color:#aaa}.lpf-location-summary{display:flex;align-items:center;gap:12px}.lpf-location-summary>strong{font-size:25px}.lpf-location-summary>span{font-size:11px}.lpf-confidence,.lpf-muted{font-size:10px;color:#777}.lpf-route-box{display:flex;justify-content:space-between;align-items:center;gap:20px;background:#171717;color:#fff;border-radius:18px;padding:18px 20px;margin-bottom:18px}.lpf-route-box .lpf-section-title{margin-bottom:5px}.lpf-route-box p{font-size:10px;color:#bbb;margin:0;max-width:470px}.lpf-route-box>div:last-child{display:flex;gap:8px}.lpf-route-box a{background:var(--accent);color:#171717;font-size:11px;min-height:38px}.lpf-route-box .lpf-alt-link{background:#fff}.lpf-similar{margin-bottom:18px}.lpf-similar-list{display:grid;grid-template-columns:repeat(3,1fr);gap:8px}.lpf-similar-list button{display:grid;justify-content:start;text-align:left;border-radius:12px;background:#f0f0ec;min-height:62px}.lpf-similar-list span{font-size:9px;color:#777;margin-top:3px}.lpf-detail-actions{display:grid;grid-template-columns:.7fr .9fr 1.6fr;gap:10px}.lpf-request-success,.lpf-request-error{margin-top:12px;padding:12px 14px;border-radius:11px;font-size:11px;line-height:1.4}.lpf-request-success{background:#dcead5;color:#315125}.lpf-request-error{background:#f3d7d4;color:#7f2924}.lpf-dialog>small{display:block;color:#777;font-size:9px;line-height:1.4;margin-top:12px}
+      .lpf-map-layout{display:grid;grid-template-columns:280px 1fr;gap:16px;padding:20px 38px 38px}.lpf-map-list{max-height:540px;overflow:auto;display:grid;align-content:start;gap:8px}.lpf-map-provider{display:grid;grid-template-columns:1fr 1fr;gap:5px;background:#dddcd7;border-radius:999px;padding:4px;margin-bottom:4px}.lpf-map-provider button{min-height:34px;padding:6px;background:transparent}.lpf-map-provider button.active{background:#171717;color:#fff}.lpf-map-item{display:grid;justify-content:start;text-align:left;background:#fff;border:1px solid #dadad5;border-radius:14px;padding:13px;min-height:76px}.lpf-map-item.active{border:2px solid var(--accent)}.lpf-map-item span,.lpf-map-item small{font-size:10px;color:#777;margin-top:3px}.lpf-map-canvas{position:relative;min-height:540px;background:#ddd;border-radius:20px;overflow:hidden}.lpf-map-canvas iframe{width:100%;height:100%;min-height:540px;border:0}.lpf-map-note{position:absolute;left:14px;top:14px;background:rgba(23,23,23,.9);color:#fff;border-radius:999px;padding:9px 12px;font-size:9px}.lpf-map-route{position:absolute;right:14px;bottom:14px;background:var(--accent);color:#171717}.lpf-saved-intro{display:flex;justify-content:space-between;align-items:center;gap:20px;margin:18px 38px 0;background:#fff;border-radius:16px;padding:15px 18px}.lpf-saved-intro strong,.lpf-saved-intro span{display:block}.lpf-saved-intro span{font-size:10px;color:#777;margin-top:3px}.lpf-saved-intro .lpf-saved-error{color:#9d342f}.lpf-saved-tools{display:flex;align-items:center;gap:12px}.lpf-saved-tools .lpf-secondary{min-height:36px;padding:7px 14px}.lpf-text-button{color:#985f00}.lpf-compare-hint{margin:10px 38px 0;font-size:10px;color:#777}.lpf-comparison{margin:14px 38px 0;background:#171717;color:#fff;border-radius:18px;padding:15px;overflow:auto}.lpf-comparison-grid{display:grid;grid-template-columns:130px repeat(4,minmax(110px,1fr));gap:8px;padding:8px;border-top:1px solid #333;font-size:10px}.lpf-comparison-grid:first-child{border:0}.lpf-comparison-grid span{color:#aaa}.lpf-empty{display:grid;gap:7px;margin:20px 38px 38px;background:#fff;border:1px solid #ddd;border-radius:18px;padding:30px;text-align:center}.lpf-empty span{font-size:11px;color:#777}
+      @media(max-width:980px){.lpf-filters{grid-template-columns:repeat(2,1fr)}.lpf-filters button{grid-column:auto}.lpf-grid{grid-template-columns:repeat(2,1fr)}.lpf-map-layout{grid-template-columns:220px 1fr}}@media(max-width:700px){.lpf-shell{border-radius:18px}.lpf-header,.lpf-filters,.lpf-grid{padding-left:20px;padding-right:20px}.lpf-header{display:block}.lpf-brand{display:inline-block;margin-top:18px}.lpf-filters{grid-template-columns:1fr}.lpf-grid{grid-template-columns:1fr}.lpf-status{margin-left:20px;margin-right:20px}.lpf-bottom{padding-left:20px;padding-right:20px;display:grid;gap:10px}.lpf-toolbar{padding:0 20px;align-items:stretch;display:grid}.lpf-tabs{overflow:auto}.lpf-sort{justify-content:space-between}.lpf-sort select{width:210px}.lpf-gate{position:absolute;top:24px;transform:translateX(-50%);padding:24px}.lpf-preview{min-height:620px}.lpf-detail{padding:22px}.lpf-detail-head{display:grid}.lpf-big-score{height:70px}.lpf-unavailable-banner{display:grid}.lpf-detail-grid{grid-template-columns:1fr}.lpf-detail-actions{grid-template-columns:1fr}.lpf-route-box{display:grid}.lpf-route-box>div:last-child{display:grid}.lpf-similar-list{grid-template-columns:1fr}.lpf-map-layout{grid-template-columns:1fr;padding:20px}.lpf-map-list{grid-template-columns:repeat(2,1fr);max-height:220px}.lpf-map-provider{grid-column:1/-1}.lpf-map-canvas,.lpf-map-canvas iframe{min-height:410px}.lpf-saved-intro{margin-left:20px;margin-right:20px;display:grid}.lpf-saved-tools{justify-content:space-between}.lpf-comparison{margin-left:20px;margin-right:20px}.lpf-comparison-grid{grid-template-columns:100px repeat(4,minmax(90px,1fr))}}
     `;
   }
 })();

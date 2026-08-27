@@ -23,6 +23,7 @@
         <button class="nav-item active" data-view="dashboard"><span>⌁</span>Обзор</button>
         <button class="nav-item" data-view="listings"><span>▤</span>Объекты</button>
         <button class="nav-item" data-view="map"><span>⌖</span>Карта</button>
+        <button class="nav-item" data-view="widget"><span>◎</span>Виджет</button>
         <button class="nav-item" data-view="health"><span>◉</span>Источники</button>
         <button class="nav-item" data-view="settings"><span>⚙</span>Настройки</button>
       </nav>
@@ -52,7 +53,7 @@
           <div>
             <p class="eyebrow">Короткий список</p>
             <h2>Найдём место, которое хочется назвать своим</h2>
-            <p>Сервис проверяет Realt и Kufar, считает расстояние, убирает дубли и показывает только подходящие варианты.</p>
+            <p>Сервис проверяет поддерживаемые площадки, считает расстояние, убирает дубли и показывает только подходящие варианты.</p>
           </div>
           <button class="button light" data-go="listings">Смотреть объекты →</button>
         </div>
@@ -97,6 +98,29 @@
         <div id="map" aria-label="Карта участков"></div>
         <div class="map-legend"><span><i class="pin new"></i>Новые</span><span><i class="pin liked"></i>Приглянулись</span><span><i class="pin trip"></i>К поездке</span></div>
         <div class="route-results" id="routeResults"></div>
+      </section>
+
+      <section class="view" id="view-widget">
+        <div class="section-intro">
+          <div><p class="eyebrow">Клиентский подбор</p><h2>Обращения из виджета</h2><p>Здесь собраны подтверждённые клиенты, их условия поиска и запросы помощи по конкретным вариантам.</p></div>
+          <button class="button secondary" id="refreshWidgetButton">Обновить</button>
+        </div>
+        <div class="stats-grid widget-stats">
+          <article class="stat-card"><span>Подтвердили телефон</span><strong id="widgetLeadCount">—</strong><small>клиентов получили доступ</small></article>
+          <article class="stat-card accent"><span>Попросили проверить</span><strong id="widgetRequestCount">—</strong><small>конкретных объявлений</small></article>
+          <article class="stat-card muted"><span>За последние 7 дней</span><strong id="widgetRecentCount">—</strong><small>новых обращений</small></article>
+        </div>
+        <div class="widget-admin-layout">
+          <section class="panel">
+            <div class="panel-head widget-panel-head"><div><p class="eyebrow">Очередь менеджера</p><h3>Нужна помощь</h3></div><label class="search-field widget-search"><span>⌕</span><input id="widgetSearchInput" placeholder="Телефон, код LP или объявление"></label></div>
+            <div class="widget-request-list" id="widgetRequestList"><div class="empty">Загружаем обращения…</div></div>
+          </section>
+          <aside class="panel widget-guide">
+            <p class="eyebrow">Как это работает</p><h3>Контекст не потеряется</h3>
+            <ol><li>Клиент задаёт условия и подтверждает телефон.</li><li>Сохранённые варианты остаются только у него в браузере.</li><li>По кнопке помощи сюда попадает точное исходное объявление вместе с условиями поиска.</li></ol>
+            <a class="button ghost full" href="/widget-demo" target="_blank" rel="noopener">Открыть виджет ↗</a>
+          </aside>
+        </div>
       </section>
 
       <section class="view" id="view-health">
@@ -185,6 +209,6 @@
   <div class="toast" id="toast" role="status"></div>
 
   <script src="https://unpkg.com/leaflet@1.9.4/dist/leaflet.js"></script>
-  <script src="/static/app.js"></script>
+  <script src="/static/app.js?v=20260827-anon"></script>
 </body>
 </html>

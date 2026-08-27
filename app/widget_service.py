@@ -161,11 +161,11 @@ def record_interest(
     interest.search_params = clean_mapping(search_params or {}, 30)
     interest.source_page = _short(source_page, 2_000) or lead.source_page
     return {
-        "event": "listing_interest",
+        "event": "listing_consultation_requested",
         "lead_id": lead.id,
         "phone": lead.phone,
-        "name": interest.search_params.get("contact_name", ""),
         "listing_id": listing.id,
+        "reference": interest.search_params.get("public_reference", ""),
         "listing_title": listing.title,
         "listing_url": listing.canonical_url,
         "search_params": interest.search_params,
