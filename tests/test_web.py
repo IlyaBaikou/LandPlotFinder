@@ -415,6 +415,10 @@ def test_admin_password_does_not_block_public_widget(tmp_path) -> None:
         widget_script = client.get("/static/landplotfinder-widget.js")
         assert widget_script.status_code == 200
         assert 'company: script.dataset.companyName || "ВАША КОМПАНИЯ"' in widget_script.text
+        assert "Сравнить сохранённые" in widget_script.text
+        assert "+ Добавить к сравнению" in widget_script.text
+        assert ".lpf-utils{display:flex" in widget_script.text
+        assert "min-height:55px;height:auto;overflow:visible" in widget_script.text
         service_worker = client.get("/sw.js")
         assert service_worker.status_code == 200
         assert service_worker.headers["cache-control"] == "no-store, max-age=0"
