@@ -20,6 +20,7 @@ from app.repository import hydrate_listings, upsert_listing, upsert_listing_prof
 from app.source_health import quality_metrics, record_health_batch
 from app.sources.base import ListingSource
 from app.sources.beltorgi import BeltorgiAuctionSource
+from app.sources.domovita import DomovitaSource
 from app.sources.e_auction import EauctionSource
 from app.sources.kufar import KufarSource
 from app.sources.realt import RealtSource
@@ -143,6 +144,7 @@ class Scanner:
                 "rlt_auction",
                 "e_auction",
                 "kufar",
+                "domovita",
             )
         )
         enabled = set(enabled_sources or default_sources)
@@ -230,6 +232,16 @@ class Scanner:
                     known_listing_ids=kufar_state.get("known", set()),
                     known_distance_ids=kufar_state.get("distance", set()),
                     pending_notification_ids=kufar_state.get("pending", set()),
+                )
+            )
+        if "domovita" in enabled:
+            sources.append(
+                DomovitaSource(
+                    client=client,
+                    search_urls=self.settings.domovita_search_urls,
+                    profile=self.settings.profile,
+                    max_details=max_details,
+                    max_search_pages=self.settings.domovita_max_search_pages,
                 )
             )
         return sources

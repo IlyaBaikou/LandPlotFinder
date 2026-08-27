@@ -17,8 +17,8 @@ const dt = (value) => value ? new Intl.DateTimeFormat('ru-RU', {
 const decisions = { new: 'Не разобрано', liked: 'Приглянулось', studying: 'Изучаем', trip: 'К поездке', rejected: 'Отказ' };
 const presentationMode = new URLSearchParams(location.search).get('presentation') === '1';
 const sourceNames = presentationMode
-  ? { realt: 'Площадка A', kufar: 'Площадка B', realt_auction: 'Торги A', rlt_auction: 'Торги B', e_auction: 'Торги C' }
-  : { realt: 'Realt.by', kufar: 'Kufar', realt_auction: 'Аукционы Realt', rlt_auction: 'RLT', e_auction: 'e-auction.by' };
+  ? { realt: 'Площадка A', kufar: 'Площадка B', domovita: 'Площадка C', realt_auction: 'Торги A', rlt_auction: 'Торги B', e_auction: 'Торги C' }
+  : { realt: 'Realt.by', kufar: 'Kufar', domovita: 'Domovita.by', realt_auction: 'Аукционы Realt', rlt_auction: 'RLT', e_auction: 'e-auction.by' };
 const healthNames = { healthy: 'Работает', degraded: 'Нужна проверка', error: 'Ошибка', empty: 'Пустая выдача', never: 'Ещё не проверен' };
 const mapProviderNames = { google: 'Google Maps', yandex: 'Яндекс Карты' };
 const displayTitle = (listing) => presentationMode
@@ -219,7 +219,7 @@ async function saveSettings(form) {
 async function saveSetup(form) {
   const data = formObject(form); const current = await api('/api/settings');
   state.settings = await api('/api/settings', { method: 'PUT', body: JSON.stringify({ ...current, ...data,
-    sources: ['realt', 'kufar'], target_price_usd: Math.min(20000, data.max_price_usd),
+    sources: ['realt', 'kufar', 'domovita'], target_price_usd: Math.min(20000, data.max_price_usd),
     primary_electricity_kw: 20, secondary_electricity_kw: 6, activity_check_enabled: true,
     telegram_enabled: false, telegram_bot_token: '', telegram_chat_id: '', schedule_interval_hours: 6 }) });
   await loadProfiles(); $('#setupModal').classList.add('hidden'); fillSettings(); toast('Готово. Запускаем первый поиск'); runJob('scan');

@@ -19,7 +19,7 @@ DEFAULT_WEB_CONFIG: Dict[str, Any] = {
     "schedule_interval_hours": 6,
     "activity_check_enabled": True,
     "map_provider": "google",
-    "sources": ["realt", "kufar"],
+    "sources": ["realt", "kufar", "domovita"],
     "target_price_usd": 20_000,
     "max_price_usd": 40_000,
     "min_area_sotok": 9,
@@ -51,6 +51,7 @@ ALLOWED_SOURCES = {
     "realt_auction",
     "rlt_auction",
     "e_auction",
+    "domovita",
 }
 
 
@@ -263,7 +264,7 @@ def _default_profile(
         "enabled": True,
         "schedule_enabled": True,
         "schedule_interval_hours": 6,
-        "sources": ["realt", "kufar"],
+        "sources": ["realt", "kufar", "domovita"],
         "target_price_usd": 20_000,
         "max_price_usd": 40_000,
         "min_area_sotok": 9,
@@ -316,7 +317,7 @@ def _profile_id(value: Any) -> str:
 def _sources(value: Any) -> list[str]:
     values: Iterable[Any] = value if isinstance(value, list) else []
     result = [str(item) for item in values if str(item) in ALLOWED_SOURCES]
-    return result or ["realt", "kufar"]
+    return result or ["realt", "kufar", "domovita"]
 
 
 def _bounded_float(value: Any, minimum: float, maximum: float, fallback: float) -> float:

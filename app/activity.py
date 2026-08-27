@@ -5,6 +5,7 @@ from dataclasses import dataclass
 from datetime import datetime, timezone
 from typing import Dict, List, Optional, Tuple
 
+from bs4 import BeautifulSoup
 from sqlalchemy import case, func, select
 
 from app.config import Settings
@@ -90,7 +91,7 @@ class ListingActivityChecker:
                     )
                     .where(
                         ListingModel.active.is_(True),
-                        ListingModel.source.in_({"realt", "kufar"}),
+                        ListingModel.source.in_({"realt", "kufar", "domovita"}),
                         ListingModel.price_usd.is_not(None),
                         ListingModel.price_usd <= self.settings.profile.max_price_usd,
                         ListingModel.area_sotok.is_not(None),
@@ -230,6 +231,25 @@ class GoogleSheetActivitySink:
 
 
 def listing_page_status(source: str, html: str) -> str:
+    if source == "domovita":
+        soup = BeautifulSoup(html, "html.parser")
+        for script in soup.select('script[type="application/ld+json"]'):
+            text = script.string or script.get_text()
+            if '"@type":"Product"' in text.replace(" ", "") or '"@type": "Product"' in text:
+                return "available"
+        if soup.select_one("#model_id"):
+            return "available"
+        lowered = soup.get_text(" ", strip=True).lower()
+        if any(
+            marker in lowered
+            for marker in (
+                "объявление не найдено",
+                "объект не найден",
+                "страница не найдена",
+            )
+        ):
+            return "unavailable"
+        return "unknown"
     try:
         data = extract_next_data(html)
     except ValueError:

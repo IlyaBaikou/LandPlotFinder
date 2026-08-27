@@ -48,6 +48,19 @@ def test_unknown_page_is_not_treated_as_removed() -> None:
     assert listing_page_status("unexpected", _page({"props": {}})) == "unknown"
 
 
+def test_domovita_activity_status_uses_structured_product() -> None:
+    available = (
+        '<script type="application/ld+json">'
+        '{"@type":"Product","productID":"42"}'
+        "</script>"
+    )
+    assert listing_page_status("domovita", available) == "available"
+    assert (
+        listing_page_status("domovita", "<html>Объявление не найдено</html>")
+        == "unavailable"
+    )
+
+
 def test_listing_is_archived_only_after_two_unavailable_checks(tmp_path) -> None:
     database_url = f"sqlite:///{tmp_path / 'activity.db'}"
     engine = make_engine(database_url)

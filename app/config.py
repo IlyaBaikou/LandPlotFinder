@@ -43,6 +43,7 @@ class Settings:
     http_retries: int
     request_delay_seconds: float
     max_details_per_source: int
+    domovita_max_search_pages: int
     kufar_max_search_pages: int
     kufar_detail_delay_seconds: float
     kufar_detail_batch_size: int
@@ -53,6 +54,7 @@ class Settings:
     rlt_auction_urls: List[str] = field(default_factory=list)
     e_auction_urls: List[str] = field(default_factory=list)
     beltorgi_auction_urls: List[str] = field(default_factory=list)
+    domovita_search_urls: List[str] = field(default_factory=list)
     kufar_search_urls: List[str] = field(default_factory=list)
     preferred_location_name: str = "Логойское направление"
     preferred_realt_search_urls: List[str] = field(default_factory=list)
@@ -133,6 +135,9 @@ def load_settings(env_file: Optional[str] = None) -> Settings:
         http_retries=int(os.getenv("HTTP_RETRIES", "3")),
         request_delay_seconds=float(os.getenv("REQUEST_DELAY_SECONDS", "3")),
         max_details_per_source=int(os.getenv("MAX_DETAILS_PER_SOURCE", "15")),
+        domovita_max_search_pages=int(
+            os.getenv("DOMOVITA_MAX_SEARCH_PAGES", "2")
+        ),
         kufar_max_search_pages=int(os.getenv("KUFAR_MAX_SEARCH_PAGES", "3")),
         kufar_detail_delay_seconds=float(
             os.getenv("KUFAR_DETAIL_DELAY_SECONDS", "6")
@@ -185,6 +190,19 @@ def load_settings(env_file: Optional[str] = None) -> Settings:
             os.getenv(
                 "BELTORGI_AUCTION_URLS",
                 "",
+            )
+        ),
+        domovita_search_urls=_as_urls(
+            os.getenv(
+                "DOMOVITA_SEARCH_URLS",
+                ",".join(
+                    [
+                        "https://domovita.by/minskiyi-rayion/area/sale",
+                        "https://domovita.by/minskiyi-rayion/houses/sale",
+                        "https://domovita.by/logoyiskiyi-rayion/area/sale",
+                        "https://domovita.by/logoyiskiyi-rayion/houses/sale",
+                    ]
+                ),
             )
         ),
         kufar_search_urls=_as_urls(

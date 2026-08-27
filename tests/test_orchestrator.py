@@ -1,6 +1,7 @@
 from app.config import load_settings
 from app.domain import NormalizedListing
 from app.orchestrator import Scanner, _mark_preferred
+from app.sources.domovita import DomovitaSource
 from app.sources.e_auction import EauctionSource
 from app.sources.kufar import KufarSource
 from app.sources.realt import RealtSource
@@ -19,7 +20,9 @@ def test_builds_both_sources_with_kufar_page_limit(monkeypatch) -> None:
     assert isinstance(sources[2], RltAuctionSource)
     assert isinstance(sources[3], EauctionSource)
     assert isinstance(sources[4], KufarSource)
+    assert isinstance(sources[5], DomovitaSource)
     assert sources[4].max_search_pages == 2
+    assert sources[5].max_search_pages == 2
 
 
 def test_beltorgi_is_not_scanned_by_default(monkeypatch) -> None:

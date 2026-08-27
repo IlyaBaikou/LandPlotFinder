@@ -22,6 +22,13 @@ def test_encoded_filter_commas_do_not_split_urls(monkeypatch) -> None:
         "https://e-auction.by/nedvizhimost/zemelnye_uchastki/"
     ]
     assert settings.beltorgi_auction_urls == []
+    assert settings.domovita_max_search_pages == 2
+    assert settings.domovita_search_urls == [
+        "https://domovita.by/minskiyi-rayion/area/sale",
+        "https://domovita.by/minskiyi-rayion/houses/sale",
+        "https://domovita.by/logoyiskiyi-rayion/area/sale",
+        "https://domovita.by/logoyiskiyi-rayion/houses/sale",
+    ]
     assert settings.kufar_detail_delay_seconds == 6
     assert settings.kufar_detail_batch_size == 8
     assert settings.kufar_detail_batch_pause_seconds == 45

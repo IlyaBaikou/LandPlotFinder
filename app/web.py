@@ -110,7 +110,9 @@ class SearchProfilePayload(BaseModel):
     enabled: bool = True
     schedule_enabled: bool = True
     schedule_interval_hours: int = Field(default=6, ge=1, le=168)
-    sources: List[str] = Field(default_factory=lambda: ["realt", "kufar"])
+    sources: List[str] = Field(
+        default_factory=lambda: ["realt", "kufar", "domovita"]
+    )
     target_price_usd: float = Field(default=20_000, ge=0)
     max_price_usd: float = Field(default=40_000, gt=0)
     min_area_sotok: float = Field(default=9, gt=0)

@@ -85,7 +85,7 @@
           <select id="decisionFilter" aria-label="Статус решения">
             <option value="all">Все решения</option><option value="new">Не разобрано</option><option value="liked">Приглянулось</option><option value="studying">Изучаем</option><option value="trip">К поездке</option><option value="rejected">Отказ</option>
           </select>
-          <select id="sourceFilter" aria-label="Источник"><option value="all">Все источники</option><option value="realt">Realt</option><option value="kufar">Kufar</option><option value="realt_auction">Аукционы</option></select>
+          <select id="sourceFilter" aria-label="Источник"><option value="all">Все источники</option><option value="realt">Realt</option><option value="kufar">Kufar</option><option value="domovita">Domovita</option><option value="realt_auction">Аукционы Realt</option><option value="rlt_auction">RLT</option><option value="e_auction">e-auction.by</option></select>
           <select id="activeFilter" aria-label="Актуальность"><option value="active">Актуальные</option><option value="archived">Архив</option><option value="all">Все</option></select>
         </div>
         <div class="results-head"><p id="resultsCount">Загрузка…</p><div class="score-filter"><label for="scoreInput">Оценка от</label><input id="scoreInput" type="range" min="0" max="100" value="0"><b id="scoreValue">0</b></div></div>
@@ -147,6 +147,7 @@
               <div class="check-grid">
                 <label class="check-card"><input type="checkbox" name="sources" value="realt"><span><b>Realt.by</b><small>Участки, дома и дачи</small></span></label>
                 <label class="check-card"><input type="checkbox" name="sources" value="kufar"><span><b>Kufar</b><small>Частные объявления</small></span></label>
+                <label class="check-card"><input type="checkbox" name="sources" value="domovita"><span><b>Domovita.by</b><small>Участки, дома и коттеджи</small></span></label>
                 <label class="check-card"><input type="checkbox" name="sources" value="realt_auction"><span><b>Аукционы Realt</b><small>Опциональный источник</small></span></label>
                 <label class="check-card"><input type="checkbox" name="sources" value="rlt_auction"><span><b>RLT</b><small>Опциональный источник</small></span></label>
                 <label class="check-card"><input type="checkbox" name="sources" value="e_auction"><span><b>e-auction.by</b><small>Опциональный источник</small></span></label>
@@ -209,6 +210,6 @@
   <div class="toast" id="toast" role="status"></div>
 
   <script src="https://unpkg.com/leaflet@1.9.4/dist/leaflet.js"></script>
-  <script src="/static/app.js?v=20260827-anon"></script>
+  <script src="/static/app.js?v=20260827-domovita"></script>
 </body>
 </html>
