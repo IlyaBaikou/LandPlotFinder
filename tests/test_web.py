@@ -435,6 +435,7 @@ def test_admin_password_does_not_block_public_widget(tmp_path) -> None:
         assert 'artboard.style.setProperty("height", height, "important")' in widget_script.text
         assert "shell.offsetHeight || shellRect.height" in widget_script.text
         assert 'data-lpf-tilda-zero-block="true"' in widget_script.text
+        assert "overscroll-behavior-y:auto" in widget_script.text
         service_worker = client.get("/sw.js")
         assert service_worker.status_code == 200
         assert service_worker.headers["cache-control"] == "no-store, max-age=0"
