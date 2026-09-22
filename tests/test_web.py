@@ -426,6 +426,13 @@ def test_admin_password_does_not_block_public_widget(tmp_path) -> None:
         assert "+ Добавить к сравнению" in widget_script.text
         assert ".lpf-utils{display:flex" in widget_script.text
         assert "min-height:55px;height:auto;overflow:visible" in widget_script.text
+        assert (
+            'resultsHeight: boundedNumber(script.dataset.resultsHeight, 680, 420, 1000)'
+            in widget_script.text
+        )
+        assert 'mount.dataset.lpfTildaZeroBlock = "true"' in widget_script.text
+        assert "new ResizeObserver(schedule).observe(shell)" in widget_script.text
+        assert 'data-lpf-tilda-zero-block="true"' in widget_script.text
         service_worker = client.get("/sw.js")
         assert service_worker.status_code == 200
         assert service_worker.headers["cache-control"] == "no-store, max-age=0"
