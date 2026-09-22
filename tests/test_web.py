@@ -439,6 +439,8 @@ def test_admin_password_does_not_block_public_widget(tmp_path) -> None:
         assert ".lpf-dialog-layer{position:fixed" in widget_script.text
         assert "padding:20px;overflow-y:auto" in widget_script.text
         assert ".lpf-dialog-close{position:sticky" in widget_script.text
+        assert "updateDialogTopOffset(dialog)" in widget_script.text
+        assert "--lpf-modal-top-offset" in widget_script.text
         service_worker = client.get("/sw.js")
         assert service_worker.status_code == 200
         assert service_worker.headers["cache-control"] == "no-store, max-age=0"
