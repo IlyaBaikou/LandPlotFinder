@@ -110,8 +110,9 @@
     const shell = root.querySelector(".lpf-shell");
     if (!shell) return;
     const { artboard, element, atom, carrier, filter } = tildaZeroBlock;
-    const shellHeight = Math.ceil(shell.getBoundingClientRect().height);
-    if (!shellHeight) return;
+    const shellRect = shell.getBoundingClientRect();
+    const shellHeight = Math.ceil(shell.offsetHeight || shellRect.height);
+    if (!shellHeight || !shellRect.height) return;
 
     mount.style.height = `${shellHeight}px`;
     if (atom) atom.style.height = `${shellHeight}px`;
@@ -119,16 +120,16 @@
 
     const artboardRect = artboard.getBoundingClientRect();
     const mountRect = mount.getBoundingClientRect();
-    let requiredBottom = Math.max(0, mountRect.top - artboardRect.top) + shellHeight;
+    let requiredBottom = Math.max(0, mountRect.top - artboardRect.top) + shellRect.height;
     artboard.querySelectorAll(":scope > .tn-elem").forEach((candidate) => {
       if (candidate === element) return;
       const rect = candidate.getBoundingClientRect();
       requiredBottom = Math.max(requiredBottom, rect.bottom - artboardRect.top);
     });
     const height = `${Math.ceil(requiredBottom + 24)}px`;
-    artboard.style.height = height;
-    if (carrier) carrier.style.height = height;
-    if (filter) filter.style.height = height;
+    artboard.style.setProperty("height", height, "important");
+    if (carrier) carrier.style.setProperty("height", height, "important");
+    if (filter) filter.style.setProperty("height", height, "important");
   }
 
   function renderSearch() {
