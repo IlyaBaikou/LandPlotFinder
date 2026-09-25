@@ -51,7 +51,6 @@
     "Брестское", "Витебское", "Гродненское", "Логойское", "Могилёвское",
     "Молодечненское", "Московское", "Мядельское", "Пуховичское", "Раковское", "Слуцкое",
   ];
-  const requestedRefs = new Set();
 
   if (!new Set(["yandex", "google"]).has(mapProvider)) mapProvider = "yandex";
   if (token) {
@@ -135,7 +134,7 @@
   function renderSearch() {
     app.innerHTML = `
       <header class="lpf-header">
-        <div><div class="lpf-kicker">Умный подбор земли</div><h2>Найдите место для будущего дома</h2></div>
+        <div><div class="lpf-kicker">Умный подбор участка</div><h2>Найдите идеальное место для будущего дома</h2></div>
         <div class="lpf-brand">${html(config.company)}</div>
       </header>
       <form id="search-form" class="lpf-filters">
@@ -154,7 +153,7 @@
       </form>
       <div id="search-status" class="lpf-status" aria-live="polite"></div>
       <div id="search-results"></div>
-      <div class="lpf-bottom"><span>Данные обновляются автоматически · точные объявления доступны менеджеру</span><button id="logout" class="lpf-link" type="button" ${token ? "" : "hidden"}>Сменить телефон</button></div>`;
+      <div class="lpf-bottom"><span>Данные обновляются автоматически</span><button id="logout" class="lpf-link" type="button" ${token ? "" : "hidden"}>Сменить телефон</button></div>`;
     restoreSearchForm();
     app.querySelector("#search-form").addEventListener("submit", (event) => {
       event.preventDefault();
@@ -277,7 +276,7 @@
     gate.innerHTML = `
       <div class="lpf-kicker">Подборка готова</div>
       <h3>Откройте найденные варианты</h3>
-      <p>Подтверждение телефона защищает каталог от автоматической выгрузки. Повторно вводить номер на этом устройстве не придётся 30 дней.</p>
+      <p>Введите номер, чтобы открыть подборку. После ввода кода повторно вводить номер на этом устройстве не придётся 30 дней.</p>
       ${notice(message)}
       <form id="phone-form" class="lpf-gate-form">
         <label>Номер телефона<input name="phone" type="tel" autocomplete="tel" placeholder="+375 29 000-00-00" required></label>
@@ -316,8 +315,16 @@
   function renderCodeGate(payload, message = "") {
     renderBlurredCards();
     const gate = app.querySelector("#auth-gate");
-    gate.innerHTML = `<button id="back-phone" class="lpf-back" type="button">← Изменить номер</button><div class="lpf-kicker">Подтверждение</div><h3>Введите код из SMS</h3><p>Отправили шестизначный код на ${html(payload.phone || currentPhone)}.</p>${payload.demo_code ? `<div class="lpf-demo">Демо-код: <strong>${html(payload.demo_code)}</strong></div>` : ""}${notice(message)}<form id="code-form" class="lpf-gate-form"><label>Код<input name="code" inputmode="numeric" autocomplete="one-time-code" maxlength="6" placeholder="000000" required></label><button type="submit">Открыть подборку</button></form>`;
+    gate.innerHTML = `<button id="back-phone" class="lpf-back" type="button">← Изменить номер</button><div class="lpf-kicker">Подтверждение</div><h3>${payload.demo_code ? "Ваш индивидуальный демо-код" : "Введите код из SMS"}</h3>${payload.demo_code ? `<div class="lpf-demo"><strong id="demo-code">${html(payload.demo_code)}</strong><button id="copy-demo-code" type="button" aria-label="Скопировать демо-код" title="Скопировать демо-код">⧉ Копировать</button></div>` : `<p>Отправили шестизначный код на ${html(payload.phone || currentPhone)}.</p>`}${notice(message)}<form id="code-form" class="lpf-gate-form"><label>${payload.demo_code ? "Введите ваш демо-код" : "Код из SMS"}<input name="code" inputmode="numeric" autocomplete="one-time-code" maxlength="6" placeholder="000000" required></label><button type="submit">Открыть подборку</button></form>`;
     gate.querySelector("#back-phone").addEventListener("click", () => renderPhoneGate());
+    gate.querySelector("#copy-demo-code")?.addEventListener("click", async (event) => {
+      try {
+        await navigator.clipboard.writeText(payload.demo_code);
+        event.currentTarget.textContent = "✓ Скопировано";
+      } catch (_) {
+        event.currentTarget.textContent = "Выделите код выше";
+      }
+    });
     gate.querySelector("#code-form").addEventListener("submit", (event) => verifyCode(event, payload));
     gate.querySelector("input[name=code]").focus();
   }
@@ -382,7 +389,7 @@
     const badge = unavailable
       ? '<span class="lpf-availability">Снято</span>'
       : `<span class="lpf-score">${html(item.match_score)}% совпадение</span>`;
-    return `<article class="lpf-card ${unavailable ? "lpf-unavailable" : ""}" data-card-ref="${attr(item.reference)}"><div class="lpf-cardtop"><span class="lpf-reference">${html(item.reference)}</span>${badge}</div>${unavailable ? '<div class="lpf-unavailable-note">Объявление больше не публикуется. Сохранённая карточка оставлена для истории.</div>' : ""}<h3 title="${attr(item.title)}">${html(item.title)}</h3><p class="lpf-location" title="${attr(item.location)}">≈ ${html(item.location)}</p><div class="lpf-facts"><div><span>Цена</span><strong>${item.price_usd == null ? "—" : `$${number(item.price_usd)}`}</strong></div><div><span>Площадь</span><strong>${item.area_sotok == null ? "—" : `${number(item.area_sotok)} сот.`}</strong></div><div><span>До МКАД</span><strong>${item.distance_mkad_km == null ? "—" : `${number(item.distance_mkad_km)} км`}</strong></div></div><div class="lpf-card-insights"><span class="lpf-location-score">Локация <strong>${item.location_score == null ? "изучается" : `${html(item.location_score)}/100`}</strong></span><span class="lpf-fresh">${freshness(item.last_seen_at)}</span></div><div class="lpf-utils">${utility(item.electricity, "Электричество")}${utility(item.gas, "Газ")}${utility(item.water, "Вода")}${utility(item.sewerage, "Канализация")}</div>${options.savedView ? `<button class="lpf-compare-toggle ${compare ? "active" : ""}" type="button" data-compare="${attr(item.reference)}" aria-pressed="${compare}">${compare ? "✓ Выбрано для сравнения" : "+ Добавить к сравнению"}</button>` : ""}<div class="lpf-actions"><button class="lpf-secondary" type="button" data-details="${attr(item.reference)}">Подробнее</button><button type="button" data-save="${attr(item.reference)}">${saved ? "✓ Сохранено" : "♡ Сохранить"}</button></div></article>`;
+    return `<article class="lpf-card ${unavailable ? "lpf-unavailable" : ""}" data-card-ref="${attr(item.reference)}"><div class="lpf-cardtop"><span class="lpf-reference">${html(item.reference)}</span>${badge}</div>${unavailable ? '<div class="lpf-unavailable-note">Объявление больше не публикуется. Сохранённая карточка оставлена для истории.</div>' : ""}<h3 title="${attr(item.title)}">${html(item.title)}</h3><p class="lpf-location" title="${attr(item.location)}">≈ ${html(item.location)}</p><div class="lpf-facts"><div><span>Цена</span><strong>${item.price_usd == null ? "—" : `$${number(item.price_usd)}`}</strong></div><div><span>Площадь</span><strong>${item.area_sotok == null ? "—" : `${number(item.area_sotok)} сот.`}</strong></div><div><span>До МКАД</span><strong>${item.distance_mkad_km == null ? "—" : `${number(item.distance_mkad_km)} км`}</strong></div></div><div class="lpf-card-insights"><span class="lpf-location-score">Локация <strong>${item.location_score == null ? "изучается" : `${html(item.location_score)}/100`}</strong></span><span class="lpf-fresh">${freshness(item.last_seen_at)}</span></div><div class="lpf-utils">${utility(item.electricity, "Электричество")}${utility(item.gas, "Газ")}${utility(item.water, "Вода")}${utility(item.sewerage, "Канализация")}</div>${options.savedView ? `<button class="lpf-compare-toggle ${compare ? "active" : ""}" type="button" data-compare="${attr(item.reference)}" aria-pressed="${compare}">${compare ? "✓ Выбрано для сравнения" : "+ Добавить к сравнению"}</button>` : ""}${listingLink(item, unavailable)}<div class="lpf-actions"><button class="lpf-secondary" type="button" data-details="${attr(item.reference)}">Подробнее</button><button type="button" data-save="${attr(item.reference)}">${saved ? "✓ Сохранено" : "♡ Сохранить"}</button></div></article>`;
   }
 
   function wireCards(scope, sourceItems) {
@@ -398,7 +405,7 @@
     dialog.id = "lpf-dialog";
     dialog.className = "lpf-dialog-layer";
     const similar = similarItems(item).slice(0, 3);
-    dialog.innerHTML = `<div class="lpf-dialog lpf-detail" role="dialog" aria-modal="true" aria-labelledby="detail-title"><button class="lpf-dialog-close" type="button" aria-label="Закрыть">×</button><div class="lpf-detail-head"><div><div class="lpf-reference">${html(item.reference)}</div><h3 id="detail-title">${html(item.title)}</h3><p>≈ ${html(item.location)}</p></div><div class="lpf-big-score"><strong>${html(item.match_score)}%</strong><span>совпадение</span></div></div>${unavailable ? '<div class="lpf-unavailable-banner"><strong>Объявление снято с публикации</strong><span>Мы оставили сохранённую копию, чтобы вариант не исчез бесследно.</span></div>' : ""}<div class="lpf-detail-grid"><section><div class="lpf-section-title">Основные параметры</div>${detailFacts(item)}</section><section><div class="lpf-section-title">Почему подходит</div>${bulletList(item.match_reasons, "good")}${bulletList(item.warnings, "warning")}</section><section><div class="lpf-section-title">Коммуникации и участок</div>${detailUtilities(item)}</section><section><div class="lpf-section-title">Оценка локации</div>${locationDetail(item)}</section></div>${approximateMapActions(item)}${similar.length ? `<section class="lpf-similar"><div class="lpf-section-title">Похожие варианты</div><div class="lpf-similar-list">${similar.map((candidate) => `<button type="button" data-similar="${attr(candidate.reference)}"><strong>${html(candidate.reference)}</strong><span>${candidate.price_usd == null ? "Цена уточняется" : `$${number(candidate.price_usd)}`} · ${candidate.area_sotok == null ? "—" : `${number(candidate.area_sotok)} сот.`}</span></button>`).join("")}</div></section>` : ""}<div class="lpf-detail-actions"><button class="lpf-secondary" id="detail-close" type="button">Вернуться</button><button class="lpf-secondary" id="detail-save" type="button">${isSaved(item.reference) ? "✓ Сохранено" : "♡ Сохранить"}</button><button id="detail-help" type="button" ${unavailable || requestedRefs.has(item.reference) ? "disabled" : ""}>${unavailable ? "Объявление снято" : requestedRefs.has(item.reference) ? "✓ Запрос отправлен" : "Попросить специалиста проверить"}</button></div><div id="detail-request-status" aria-live="polite"></div><small>Сохранение остаётся только в вашем браузере. Специалист получит точное объявление и ваши параметры только после нажатия кнопки запроса.</small></div>`;
+    dialog.innerHTML = `<div class="lpf-dialog lpf-detail" role="dialog" aria-modal="true" aria-labelledby="detail-title"><button class="lpf-dialog-close" type="button" aria-label="Закрыть">×</button><div class="lpf-detail-head"><div><div class="lpf-reference">${html(item.reference)}</div><h3 id="detail-title">${html(item.title)}</h3><p>≈ ${html(item.location)}</p></div><div class="lpf-big-score"><strong>${html(item.match_score)}%</strong><span>совпадение</span></div></div>${unavailable ? '<div class="lpf-unavailable-banner"><strong>Объявление снято с публикации</strong><span>Мы оставили сохранённую копию, чтобы вариант не исчез бесследно.</span></div>' : ""}<div class="lpf-detail-grid"><section><div class="lpf-section-title">Основные параметры</div>${detailFacts(item)}</section><section><div class="lpf-section-title">Почему подходит</div>${bulletList(item.match_reasons, "good")}${bulletList(item.warnings, "warning")}</section><section><div class="lpf-section-title">Коммуникации и участок</div>${detailUtilities(item)}</section><section><div class="lpf-section-title">Оценка локации</div>${locationDetail(item)}</section></div>${approximateMapActions(item)}${similar.length ? `<section class="lpf-similar"><div class="lpf-section-title">Похожие варианты</div><div class="lpf-similar-list">${similar.map((candidate) => `<button type="button" data-similar="${attr(candidate.reference)}"><strong>${html(candidate.reference)}</strong><span>${candidate.price_usd == null ? "Цена уточняется" : `$${number(candidate.price_usd)}`} · ${candidate.area_sotok == null ? "—" : `${number(candidate.area_sotok)} сот.`}</span></button>`).join("")}</div></section>` : ""}<div class="lpf-detail-actions"><button class="lpf-secondary" id="detail-close" type="button">Вернуться</button><button class="lpf-secondary" id="detail-save" type="button">${isSaved(item.reference) ? "✓ Сохранено" : "♡ Сохранить"}</button>${listingLink(item, unavailable, true)}</div><small>Сохранённые варианты остаются только в вашем браузере.</small></div>`;
     updateDialogTopOffset(dialog);
     root.appendChild(dialog);
     lockPageScroll();
@@ -408,37 +415,7 @@
     dialog.querySelector(".lpf-dialog-close").addEventListener("click", closeDialog);
     dialog.querySelector("#detail-close").addEventListener("click", closeDialog);
     dialog.querySelector("#detail-save").addEventListener("click", () => toggleSaved(item, true));
-    dialog.querySelector("#detail-help").addEventListener("click", (event) => requestListingHelp(item, event.currentTarget));
     dialog.querySelectorAll("[data-similar]").forEach((button) => button.addEventListener("click", () => { const candidate = findItem(button.dataset.similar); if (candidate) showDetails(candidate); }));
-  }
-
-  async function requestListingHelp(item, button) {
-    const status = root.getElementById("detail-request-status");
-    if (isUnavailable(item.reference)) {
-      status.className = "lpf-request-error";
-      status.textContent = "Это объявление уже снято с публикации.";
-      return;
-    }
-    setBusy(button, true, "Передаём специалисту…");
-    try {
-      const payload = await api("/api/public/widget/interests", {
-        method: "POST",
-        body: {
-          reference: item.reference,
-          search_params: lastSearch,
-          source_page: window.location.href,
-        },
-      });
-      requestedRefs.add(item.reference);
-      button.textContent = "✓ Запрос отправлен";
-      status.className = "lpf-request-success";
-      status.textContent = `${payload.message}. Менеджер увидит исходное объявление ${item.reference} и сможет связаться с вами.`;
-    } catch (error) {
-      button.disabled = false;
-      button.textContent = "Повторить запрос";
-      status.className = "lpf-request-error";
-      status.textContent = error.message;
-    }
   }
 
   function detailFacts(item) {
@@ -447,7 +424,7 @@
   function detailFact(label, value) { return `<div><span>${html(label)}</span><strong>${html(value)}</strong></div>`; }
   function detailUtilities(item) {
     const values = [["Электричество", item.electricity], ["Газ", item.gas], ["Вода", item.water], ["Канализация", item.sewerage], ["Интернет", item.internet], ["Дорога", item.road]];
-    return `<div class="lpf-utility-table">${values.map(([label, value]) => `<div><span>${html(label)}</span><strong class="${value ? "known" : "unknown"}">${html(value || "Нет данных")}</strong></div>`).join("")}</div>`;
+    return `<div class="lpf-utility-table">${values.map(([label, value]) => `<div><span>${html(label)}</span><strong class="${value == null ? "unknown" : value === "Нет" ? "absent" : "known"}">${html(value || "Нет данных")}</strong></div>`).join("")}</div>`;
   }
   function locationDetail(item) {
     if (item.location_score == null) return '<p class="lpf-muted">Локация ещё изучается. Оценка появится после накопления данных.</p>';
@@ -638,14 +615,23 @@
   function setStatus(text, kind) { const node = app.querySelector("#search-status"); if (!node) return; node.className = `lpf-status ${kind || ""}`; node.textContent = text; }
   function setBusy(button, busy, label) { if (!button) return; button.disabled = busy; button.textContent = label; }
   function notice(message) { return message ? `<div class="lpf-notice">${html(message)}</div>` : ""; }
-  function utility(value, label) { return value ? `<span>✓ ${html(label)}: ${html(value)}</span>` : ""; }
+  function utility(value, label) {
+    const state = value == null ? "unknown" : value === "Нет" ? "absent" : "present";
+    const symbol = state === "present" ? "✓" : state === "absent" ? "✕" : "?";
+    return `<span class="lpf-utility-${state}" title="${html(label)}: ${html(value || "Нет данных")}">${symbol} ${html(label)}: ${html(value || "Нет данных")}</span>`;
+  }
+  function listingLink(item, unavailable = false, inDetail = false) {
+    const url = safeUrl(item.url);
+    if (unavailable || url === "#") return "";
+    return `<a class="${inDetail ? "lpf-source-link lpf-source-detail" : "lpf-source-link"}" href="${url}" target="_blank" rel="noopener noreferrer">Открыть объявление ↗</a>`;
+  }
   function confidenceLabel(value) { return ({ high: "высокая", medium: "средняя", low: "предварительная" })[value] || "предварительная"; }
   function freshness(value) { if (!value) return "Дата уточняется"; const days = Math.floor((Date.now() - new Date(value).getTime()) / 86400000); if (days <= 0) return "Проверено сегодня"; if (days === 1) return "Проверено вчера"; return `Проверено ${days} дн. назад`; }
   function utmParams() { const result = {}; new URLSearchParams(window.location.search).forEach((value, key) => { if (key.startsWith("utm_")) result[key] = value; }); return result; }
   function number(value) { return new Intl.NumberFormat("ru-RU", { maximumFractionDigits: 1 }).format(value); }
   function html(value) { return String(value == null ? "" : value).replace(/[&<>"']/g, (char) => ({ "&": "&amp;", "<": "&lt;", ">": "&gt;", '"': "&quot;", "'": "&#39;" })[char]); }
   function attr(value) { return html(value); }
-  function safeUrl(value) { if (value === "#") return "#"; try { const parsed = new URL(value, window.location.href); return ["http:", "https:"].includes(parsed.protocol) ? attr(parsed.href) : "#"; } catch (_) { return "#"; } }
+  function safeUrl(value) { if (!value || value === "#") return "#"; try { const parsed = new URL(value, window.location.href); return ["http:", "https:"].includes(parsed.protocol) ? attr(parsed.href) : "#"; } catch (_) { return "#"; } }
   function boundedNumber(value, fallback, minimum, maximum) { const parsed = Number(value); return Number.isFinite(parsed) ? Math.min(maximum, Math.max(minimum, parsed)) : fallback; }
 
   function styles() {
@@ -657,6 +643,10 @@
       .lpf-dialog-layer{position:fixed;z-index:2147483000;top:var(--lpf-modal-top-offset,0px);right:0;bottom:0;left:0;background:rgba(0,0,0,.7);display:block;padding:20px;overflow-y:auto;overscroll-behavior:contain;-webkit-overflow-scrolling:touch}.lpf-dialog{position:relative;width:min(880px,100%);margin:0 auto;overflow:visible;background:#f4f4f1;color:#171717;border-radius:26px;padding:30px;box-shadow:0 30px 100px rgba(0,0,0,.5)}.lpf-dialog-close{position:sticky;z-index:5;top:0;margin:-14px -12px -34px auto;display:flex;background:#171717;color:#fff;min-height:44px;width:44px;padding:0;font-size:22px;box-shadow:0 6px 18px rgba(0,0,0,.22)}.lpf-detail-head{display:flex;justify-content:space-between;gap:24px;padding:4px 50px 24px 0;border-bottom:1px solid #d7d7d1;min-width:0}.lpf-detail-head>div:first-child{min-width:0}.lpf-detail-head h3{font-size:30px;margin:9px 0 5px;max-width:620px;overflow-wrap:anywhere}.lpf-detail-head p{font-size:13px;color:#777;margin:0}.lpf-big-score{min-width:112px;height:90px;border-radius:18px;background:#171717;color:#fff;display:grid;place-content:center;text-align:center}.lpf-big-score strong{font-size:29px}.lpf-big-score span{font-size:9px;text-transform:uppercase;letter-spacing:.08em;color:#bbb}.lpf-unavailable-banner{display:flex;justify-content:space-between;gap:16px;margin-top:16px;padding:13px 15px;border-radius:12px;background:#f5dedb;color:#7f2924}.lpf-unavailable-banner strong{font-size:12px}.lpf-unavailable-banner span{font-size:10px}.lpf-detail-grid{display:grid;grid-template-columns:1fr 1fr;gap:16px;padding:18px 0}.lpf-detail-grid>section,.lpf-similar{background:#fff;border:1px solid #dddcd6;border-radius:18px;padding:19px;min-width:0}.lpf-section-title{font-size:11px;font-weight:900;text-transform:uppercase;letter-spacing:.09em;margin-bottom:14px}.lpf-detail-facts{display:grid;grid-template-columns:1fr 1fr;gap:13px}.lpf-detail-facts span{display:block;font-size:9px;color:#888;margin-bottom:4px}.lpf-detail-facts strong{font-size:12px;overflow-wrap:anywhere}.lpf-bullets{list-style:none;padding:0;margin:8px 0;display:grid;gap:7px}.lpf-bullets li{display:grid;grid-template-columns:19px 1fr;gap:7px;font-size:11px;line-height:1.35}.lpf-bullets li span{display:grid;place-items:center;width:18px;height:18px;border-radius:50%;background:#dcead5;color:#315125;font-weight:900}.lpf-bullets.warning li span{background:#fff0c7;color:#7b5700}.lpf-utility-table{display:grid;grid-template-columns:1fr 1fr;gap:10px}.lpf-utility-table div{border-bottom:1px solid #eee;padding-bottom:8px;min-width:0}.lpf-utility-table span{display:block;font-size:9px;color:#888}.lpf-utility-table strong{font-size:11px;overflow-wrap:anywhere}.lpf-utility-table .unknown{color:#aaa}.lpf-location-summary{display:flex;align-items:center;gap:12px}.lpf-location-summary>strong{font-size:25px}.lpf-location-summary>span{font-size:11px}.lpf-confidence,.lpf-muted{font-size:10px;color:#777}.lpf-route-box{display:flex;justify-content:space-between;align-items:center;gap:20px;background:#171717;color:#fff;border-radius:18px;padding:18px 20px;margin-bottom:18px}.lpf-route-box .lpf-section-title{margin-bottom:5px}.lpf-route-box p{font-size:10px;color:#bbb;margin:0;max-width:470px}.lpf-route-box>div:last-child{display:flex;gap:8px}.lpf-route-box a{background:var(--accent);color:#171717;font-size:11px;min-height:38px}.lpf-route-box .lpf-alt-link{background:#fff}.lpf-similar{margin-bottom:18px}.lpf-similar-list{display:grid;grid-template-columns:repeat(3,1fr);gap:8px}.lpf-similar-list button{display:grid;justify-content:start;text-align:left;border-radius:12px;background:#f0f0ec;min-height:62px}.lpf-similar-list span{font-size:9px;color:#777;margin-top:3px}.lpf-detail-actions{display:grid;grid-template-columns:.7fr .9fr 1.6fr;gap:10px}.lpf-request-success,.lpf-request-error{margin-top:12px;padding:12px 14px;border-radius:11px;font-size:11px;line-height:1.4}.lpf-request-success{background:#dcead5;color:#315125}.lpf-request-error{background:#f3d7d4;color:#7f2924}.lpf-dialog>small{display:block;color:#777;font-size:9px;line-height:1.4;margin-top:12px}
       .lpf-map-layout{display:grid;grid-template-columns:280px 1fr;gap:16px;padding:20px 38px 38px}.lpf-map-list{max-height:540px;overflow:auto;display:grid;align-content:start;gap:8px}.lpf-map-provider{display:grid;grid-template-columns:1fr 1fr;gap:5px;background:#dddcd7;border-radius:999px;padding:4px;margin-bottom:4px}.lpf-map-provider button{min-height:34px;padding:6px;background:transparent}.lpf-map-provider button.active{background:#171717;color:#fff}.lpf-map-item{display:grid;justify-content:start;text-align:left;background:#fff;border:1px solid #dadad5;border-radius:14px;padding:13px;min-height:76px}.lpf-map-item.active{border:2px solid var(--accent)}.lpf-map-item span,.lpf-map-item small{font-size:10px;color:#777;margin-top:3px}.lpf-map-canvas{position:relative;min-height:540px;background:#ddd;border-radius:20px;overflow:hidden}.lpf-map-canvas iframe{width:100%;height:100%;min-height:540px;border:0}.lpf-map-note{position:absolute;left:14px;top:14px;background:rgba(23,23,23,.9);color:#fff;border-radius:999px;padding:9px 12px;font-size:9px}.lpf-map-route{position:absolute;right:14px;bottom:14px;background:var(--accent);color:#171717}.lpf-saved-intro{display:flex;justify-content:space-between;align-items:center;gap:20px;margin:18px 38px 0;background:#fff;border-radius:16px;padding:15px 18px}.lpf-saved-intro strong,.lpf-saved-intro span{display:block}.lpf-saved-intro span{font-size:10px;color:#777;margin-top:3px}.lpf-saved-intro .lpf-saved-error{color:#9d342f}.lpf-saved-tools{display:flex;align-items:center;gap:12px}.lpf-saved-tools .lpf-secondary{min-height:36px;padding:7px 14px}.lpf-text-button{color:#985f00}.lpf-compare-panel{display:flex;align-items:center;justify-content:space-between;gap:18px;margin:12px 38px 0;padding:15px 18px;background:#fff1be;border:1px solid #edd98c;border-radius:16px}.lpf-compare-panel strong,.lpf-compare-panel span{display:block}.lpf-compare-panel span{margin-top:4px;color:#70612d;font-size:10px}.lpf-compare-panel button{min-width:210px}.lpf-comparison{scroll-margin-top:18px;margin:14px 38px 0;background:#171717;color:#fff;border-radius:18px;padding:15px;overflow:auto}.lpf-comparison-grid{display:grid;grid-template-columns:130px repeat(var(--compare-count),minmax(110px,1fr));gap:8px;padding:8px;border-top:1px solid #333;font-size:10px;min-width:max-content}.lpf-comparison-grid:first-child{border:0}.lpf-comparison-grid span{color:#aaa}.lpf-empty{display:grid;gap:7px;margin:20px 38px 38px;background:#fff;border:1px solid #ddd;border-radius:18px;padding:30px;text-align:center}.lpf-empty span{font-size:11px;color:#777}
       @media(max-width:980px){.lpf-filters{grid-template-columns:repeat(2,minmax(0,1fr))}.lpf-utility-options{grid-column:1/-1}.lpf-filters button{grid-column:auto}.lpf-grid{grid-template-columns:repeat(2,1fr)}.lpf-map-layout{grid-template-columns:220px 1fr}.lpf-toolbar{align-items:stretch}.lpf-toolbar-actions{display:grid}.lpf-compare-shortcut{grid-row:2}.lpf-sort{grid-row:1}}@media(max-width:700px){.lpf-shell{border-radius:18px}.lpf-header,.lpf-filters,.lpf-grid{padding-left:20px;padding-right:20px}.lpf-header{display:block}.lpf-brand{display:inline-block;margin-top:18px}.lpf-filters{grid-template-columns:1fr}.lpf-utility-options{grid-column:1;display:grid;grid-template-columns:1fr 1fr;gap:12px}.lpf-filters button{grid-column:1;width:100%}.lpf-grid{grid-template-columns:1fr}.lpf-status{margin-left:20px;margin-right:20px}.lpf-bottom{padding-left:20px;padding-right:20px;display:grid;gap:10px}.lpf-toolbar{padding:0 20px;align-items:stretch;display:grid}.lpf-toolbar-actions{display:grid;grid-template-columns:1fr}.lpf-tabs{overflow:auto;overscroll-behavior-inline:contain}.lpf-compare-shortcut{grid-row:auto;width:100%}.lpf-sort{grid-row:auto;justify-content:space-between}.lpf-sort select{width:min(210px,60vw)}.lpf-gate{position:absolute;top:24px;transform:translateX(-50%);padding:24px}.lpf-preview{min-height:620px}.lpf-dialog-layer{padding:0}.lpf-detail{width:100%;min-height:100dvh;margin:0;border-radius:0;padding:22px 18px 28px}.lpf-dialog-close{top:max(8px,env(safe-area-inset-top));margin:-10px -6px -34px auto}.lpf-detail-head{display:grid;padding-right:44px}.lpf-big-score{height:70px}.lpf-unavailable-banner{display:grid}.lpf-detail-grid{grid-template-columns:1fr}.lpf-detail-actions{grid-template-columns:1fr}.lpf-route-box{display:grid}.lpf-route-box>div:last-child{display:grid}.lpf-similar-list{grid-template-columns:1fr}.lpf-map-layout{grid-template-columns:1fr;padding:20px}.lpf-map-list{grid-template-columns:repeat(2,1fr);max-height:220px}.lpf-map-provider{grid-column:1/-1}.lpf-map-canvas,.lpf-map-canvas iframe{min-height:410px}.lpf-saved-intro{margin-left:20px;margin-right:20px;display:grid}.lpf-saved-tools{justify-content:space-between}.lpf-compare-panel{margin-left:20px;margin-right:20px;display:grid}.lpf-compare-panel button{width:100%;min-width:0}.lpf-comparison{margin-left:20px;margin-right:20px}.lpf-comparison-grid{grid-template-columns:100px repeat(var(--compare-count),minmax(90px,1fr))}}@media(max-width:400px){.lpf-utility-options{grid-template-columns:1fr}.lpf-tabs{border-radius:16px}.lpf-tab{padding-inline:12px}.lpf-detail-facts,.lpf-utility-table{grid-template-columns:1fr}.lpf-map-list{grid-template-columns:1fr}}
+      .lpf-demo{display:flex;align-items:center;justify-content:space-between;gap:12px}.lpf-demo strong{font-size:20px;letter-spacing:.14em}.lpf-demo button{min-height:34px;padding:6px 12px;background:#ffe395;white-space:nowrap;font-size:11px}
+      .lpf-utils .lpf-utility-present{background:#e6f1e3;color:#275b2c}.lpf-utils .lpf-utility-absent{background:#f8e6e4;color:#952e28}.lpf-utils .lpf-utility-unknown{background:#efefed;color:#676762}.lpf-utility-table .absent{color:#952e28}
+      .lpf-source-link{display:inline-flex;align-items:center;justify-content:center;min-height:36px;margin:0 0 10px;color:#6f4800;font-size:11px;font-weight:750;text-decoration:underline;text-underline-offset:3px}.lpf-source-link:hover{text-decoration:none}.lpf-source-detail{min-height:46px;margin:0;padding:11px 16px;border:1px solid #171717;border-radius:999px;color:#171717;background:#fff;text-decoration:none;text-align:center}.lpf-detail-actions{grid-template-columns:1fr 1fr 1.4fr}
+      @media(min-width:981px){.lpf-header{padding:27px 32px 21px}.lpf-header h2{font-size:clamp(25px,2.7vw,34px);max-width:750px}.lpf-kicker{margin-bottom:9px}.lpf-filters{padding:20px 32px;gap:11px}.lpf-filters input,.lpf-filters select{height:46px;font-size:14px}.lpf-status{margin:17px 32px 0}.lpf-workspace{padding-top:12px}.lpf-toolbar{padding-left:32px;padding-right:32px}.lpf-grid{padding:17px 32px 28px;gap:15px}.lpf-bottom{padding:0 32px 18px}}
     `;
   }
 })();

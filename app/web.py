@@ -1373,6 +1373,7 @@ def _public_widget_listing_json(
     longitude = round(listing.longitude, 2) if listing.longitude is not None else None
     return {
         "reference": _public_listing_ref(public_secret, listing.id),
+        "url": listing.canonical_url,
         "title": _public_listing_title(listing),
         "location": location,
         "direction": listing.direction,
@@ -1570,6 +1571,8 @@ def _personal_match_score(
 def _electricity_label(listing: ListingModel) -> Optional[str]:
     if listing.electricity_kw:
         return f"{listing.electricity_kw:g} кВт"
+    if listing.electricity_raw and not _utility_present(listing.electricity_raw, "electricity"):
+        return "Нет"
     return "Упоминается" if listing.electricity_raw else None
 
 
@@ -1613,6 +1616,12 @@ def _utility_present(value: Optional[str], kind: str) -> bool:
     if not text:
         return False
     absent_patterns = {
+        "electricity": (
+            "электричества нет",
+            "без электричества",
+            "электричество отсутств",
+            "электроэнергии нет",
+        ),
         "gas": ("газа нет", "без газа", "газ отсутств"),
         "water": ("воды нет", "без воды", "водоснабжение отсутств"),
         "sewerage": ("канализации нет", "без канализации", "канализация отсутств"),

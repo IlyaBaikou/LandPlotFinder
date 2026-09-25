@@ -12,7 +12,7 @@ from app.models import (
     WidgetLeadModel,
     utcnow,
 )
-from app.web import create_app
+from app.web import _electricity_label, _utility_label, create_app
 from app.web_config import save_web_config
 
 
@@ -82,6 +82,13 @@ def _seed_listing(settings) -> int:
         listing_id = listing.id
     engine.dispose()
     return listing_id
+
+
+def test_utility_labels_distinguish_absent_from_unknown() -> None:
+    listing = ListingModel(electricity_raw="электричества нет")
+    assert _electricity_label(listing) == "Нет"
+    assert _utility_label("канализации нет", "sewerage") == "Нет"
+    assert _utility_label(None, "sewerage") is None
 
 
 def test_web_setup_and_listing_decision(tmp_path) -> None:
@@ -283,6 +290,7 @@ def test_public_widget_phone_search_and_interest(tmp_path) -> None:
         public_item = catalog.json()["items"][0]
         assert public_item["reference"].startswith("LP-")
         assert public_item["title"] == "Участок 10 сот. в районе Новосёлки"
+        assert public_item["url"] == "https://re.kufar.by/vi/42"
         assert public_item["electricity"] == "20 кВт"
         assert public_item["water"] == "Центральная"
         assert public_item["sewerage"] == "Септик"
@@ -297,7 +305,6 @@ def test_public_widget_phone_search_and_interest(tmp_path) -> None:
         assert {
             "id",
             "source",
-            "url",
             "description",
             "original_score",
         }.isdisjoint(public_item)
