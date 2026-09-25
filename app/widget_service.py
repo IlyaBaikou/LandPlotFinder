@@ -199,6 +199,12 @@ def record_interest(
 
 
 def notify_lead(settings: Settings, payload: Dict[str, Any]) -> None:
+    if (
+        payload.get("event") == "listing_interest_marked"
+        and settings.widget_telegram_bot_token
+        and settings.widget_telegram_chat_id
+    ):
+        _notify_widget_telegram(settings, payload)
     if not settings.widget_lead_webhook_url:
         return
     headers = {"Content-Type": "application/json"}
@@ -214,6 +220,48 @@ def notify_lead(settings: Settings, payload: Dict[str, Any]) -> None:
         response.raise_for_status()
     except Exception:
         LOGGER.exception("Widget lead webhook failed")
+
+
+def _notify_widget_telegram(settings: Settings, payload: Dict[str, Any]) -> None:
+    search = payload.get("search_params") or {}
+    criteria = []
+    if search.get("q"):
+        criteria.append(_notification_field(search["q"], 80))
+    if search.get("max_price_usd"):
+        criteria.append(f'до ${_notification_field(search["max_price_usd"], 20)}')
+    if search.get("min_area_sotok") or search.get("max_area_sotok"):
+        area_min = _notification_field(search.get("min_area_sotok") or "?", 20)
+        area_max = _notification_field(search.get("max_area_sotok") or "?", 20)
+        criteria.append(f"{area_min}–{area_max} сот.")
+    if search.get("max_distance_km"):
+        criteria.append(f'до {_notification_field(search["max_distance_km"], 20)} км')
+    lines = [
+        "⭐ Клиент отметил участок в виджете",
+        f'Телефон: {_notification_field(payload.get("phone") or "—", 32)}',
+        f'Вариант: {_notification_field(payload.get("reference") or "—", 24)}',
+        f'Название: {_notification_field(payload.get("listing_title") or "—", 140)}',
+    ]
+    if criteria:
+        lines.append(f'Поиск: {", ".join(criteria)}')
+    lines.append("Детали — в админке, раздел «Клиенты».")
+    try:
+        response = httpx.post(
+            f"https://api.telegram.org/bot{settings.widget_telegram_bot_token}/sendMessage",
+            json={
+                "chat_id": settings.widget_telegram_chat_id,
+                "text": "\n".join(lines),
+                "disable_web_page_preview": True,
+            },
+            timeout=8,
+        )
+        response.raise_for_status()
+    except Exception as exc:
+        # HTTP errors can include a URL with the bot token. Never log that URL.
+        LOGGER.error("Widget Telegram notification failed (%s)", type(exc).__name__)
+
+
+def _notification_field(value: object, limit: int) -> str:
+    return re.sub(r"\s+", " ", str(value)).strip()[:limit]
 
 
 def normalize_phone(value: object) -> str:

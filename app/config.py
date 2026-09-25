@@ -87,6 +87,8 @@ class Settings:
     widget_sms_webhook_token: Optional[str] = None
     widget_lead_webhook_url: Optional[str] = None
     widget_lead_webhook_token: Optional[str] = None
+    widget_telegram_bot_token: Optional[str] = None
+    widget_telegram_chat_id: Optional[str] = None
     web_scheduler_enabled: bool = True
     admin_username: str = "admin"
     admin_password: Optional[str] = None
@@ -326,6 +328,8 @@ def load_settings(env_file: Optional[str] = None) -> Settings:
         widget_sms_webhook_token=os.getenv("WIDGET_SMS_WEBHOOK_TOKEN") or None,
         widget_lead_webhook_url=os.getenv("WIDGET_LEAD_WEBHOOK_URL") or None,
         widget_lead_webhook_token=os.getenv("WIDGET_LEAD_WEBHOOK_TOKEN") or None,
+        widget_telegram_bot_token=os.getenv("WIDGET_TELEGRAM_BOT_TOKEN") or None,
+        widget_telegram_chat_id=os.getenv("WIDGET_TELEGRAM_CHAT_ID") or None,
         web_scheduler_enabled=_as_bool(
             os.getenv("WEB_SCHEDULER_ENABLED", "true")
         ),
