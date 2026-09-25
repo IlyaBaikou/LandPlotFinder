@@ -12,7 +12,12 @@ from sqlalchemy import select
 from sqlalchemy.orm import Session
 
 from app.config import Settings
-from app.models import ListingModel, WidgetInterestModel, WidgetLeadModel
+from app.models import (
+    ListingModel,
+    WidgetInterestModel,
+    WidgetLeadModel,
+    WidgetSearchContextModel,
+)
 
 LOGGER = logging.getLogger(__name__)
 OTP_TTL_MINUTES = 10
@@ -105,6 +110,7 @@ def verify_code(
         raise WidgetError("Неверный код", 401)
 
     token = secrets.token_urlsafe(32)
+    first_verified = lead.verified_at is None
     lead.verified_at = now
     lead.last_seen_at = now
     lead.otp_hash = None
@@ -115,6 +121,7 @@ def verify_code(
         "ok": True,
         "token": token,
         "phone": mask_phone(phone),
+        "first_verified": first_verified,
         "expires_in_seconds": SESSION_TTL_DAYS * 24 * 60 * 60,
     }
 
@@ -134,6 +141,22 @@ def verified_lead(session: Session, token: str) -> WidgetLeadModel:
     return lead
 
 
+def save_search_context(
+    session: Session,
+    lead: WidgetLeadModel,
+    criteria: Dict[str, Any],
+) -> None:
+    cleaned = clean_mapping(criteria, 20)
+    context = session.scalar(
+        select(WidgetSearchContextModel).where(WidgetSearchContextModel.lead_id == lead.id)
+    )
+    if context is None:
+        session.add(WidgetSearchContextModel(lead_id=lead.id, criteria=cleaned))
+    elif context.criteria != cleaned:
+        context.criteria = cleaned
+        context.updated_at = datetime.now(timezone.utc)
+
+
 def record_interest(
     session: Session,
     lead: WidgetLeadModel,
@@ -150,18 +173,20 @@ def record_interest(
             WidgetInterestModel.listing_id == listing.id,
         )
     )
-    if interest is None:
+    created = interest is None
+    if created:
         interest = WidgetInterestModel(
             lead_id=lead.id,
             listing_id=listing.id,
             listing_title=listing.title,
             listing_url=listing.canonical_url,
+            search_params=clean_mapping(search_params or {}, 30),
+            source_page=_short(source_page, 2_000) or lead.source_page,
         )
         session.add(interest)
-    interest.search_params = clean_mapping(search_params or {}, 30)
-    interest.source_page = _short(source_page, 2_000) or lead.source_page
     return {
-        "event": "listing_consultation_requested",
+        "event": "listing_interest_marked",
+        "created": created,
         "lead_id": lead.id,
         "phone": lead.phone,
         "listing_id": listing.id,

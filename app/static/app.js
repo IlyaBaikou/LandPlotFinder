@@ -1,5 +1,5 @@
 const state = {
-  view: 'dashboard', page: 1, settings: null, profiles: [], profileId: 'default',
+  view: 'widget', page: 1, settings: null, profiles: [], profileId: 'default',
   map: null, mapMarkers: null, detail: null, widgetAdmin: null,
 };
 let viewerMode = false;
@@ -46,16 +46,17 @@ function toast(text) {
 }
 function setView(view) {
   state.view = view;
+  document.body.classList.toggle('client-view', view === 'widget');
   $$('.view').forEach((element) => element.classList.toggle('active', element.id === `view-${view}`));
   $$('.nav-item').forEach((element) => element.classList.toggle('active', element.dataset.view === view));
   const titles = {
     dashboard: ['Ваш поиск', 'Добрый день'], listings: ['Каталог', 'Найденные объекты'],
     map: ['География', 'Карта участков'], health: ['Надёжность', 'Источники данных'],
-    widget: ['Клиентский подбор', 'Виджет для сайта'],
+    widget: ['Рабочее место менеджера', 'Клиенты'],
     settings: ['Конфигурация', 'Настройки поиска'],
   };
   $('#pageEyebrow').textContent = titles[view][0]; $('#pageTitle').textContent = titles[view][1];
-  $('.sidebar').classList.remove('open');
+  closeMobileMenu();
   if (view === 'listings') loadListings();
   if (view === 'map') loadMap();
   if (view === 'widget') loadWidgetAdmin();
@@ -248,39 +249,56 @@ async function loadWidgetAdmin() {
   try {
     state.widgetAdmin = await api('/api/widget/leads');
     $('#widgetLeadCount').textContent = number(state.widgetAdmin.total, '0');
-    $('#widgetRequestCount').textContent = number(state.widgetAdmin.requests_total, '0');
+    $('#widgetRequestCount').textContent = number(state.widgetAdmin.interests_total, '0');
     const since = Date.now() - 7 * 24 * 60 * 60 * 1000;
-    const recent = widgetRequests().filter((item) => new Date(item.created_at).getTime() >= since).length;
+    const recent = (state.widgetAdmin.items || []).filter((lead) => new Date(lead.created_at).getTime() >= since).length;
     $('#widgetRecentCount').textContent = number(recent, '0');
-    renderWidgetRequests();
+    renderWidgetClients();
   } catch (error) {
     $('#widgetRequestList').innerHTML = `<div class="empty">${esc(error.message)}</div>`;
   }
 }
-function widgetRequests() {
-  return (state.widgetAdmin?.items || []).flatMap((lead) => (lead.interests || []).map((interest) => ({
-    ...interest, phone: lead.phone, lead_id: lead.id, lead_source_page: lead.source_page,
-  }))).sort((left, right) => new Date(right.created_at) - new Date(left.created_at));
-}
-function renderWidgetRequests() {
+function renderWidgetClients() {
   const query = ($('#widgetSearchInput')?.value || '').trim().toLowerCase();
-  const requests = widgetRequests().filter((item) => !query || [item.phone, item.reference, item.title, JSON.stringify(item.search_params || {})].join(' ').toLowerCase().includes(query));
-  $('#widgetRequestList').innerHTML = requests.length ? requests.map(widgetRequestCard).join('')
-    : '<div class="empty">Запросов по конкретным объявлениям пока нет.</div>';
+  const filter = $('#widgetLeadFilter')?.value || 'all';
+  const since = Date.now() - 7 * 24 * 60 * 60 * 1000;
+  const leads = (state.widgetAdmin?.items || []).filter((lead) => {
+    if (filter === 'interested' && !(lead.interests || []).length) return false;
+    if (filter === 'recent' && new Date(lead.created_at).getTime() < since) return false;
+    const text = [lead.phone, JSON.stringify(lead.search || {}), ...(lead.interests || []).flatMap((item) => [item.reference, item.title])].join(' ').toLowerCase();
+    return !query || text.includes(query);
+  });
+  $('#widgetRequestList').innerHTML = leads.length ? leads.map(widgetClientCard).join('')
+    : '<div class="empty">По этому фильтру клиентов нет.</div>';
 }
-function widgetRequestCard(item) {
-  const sourceLink = item.url && !viewerMode ? `<a class="button primary" href="${esc(item.url)}" target="_blank" rel="noopener">Исходная карточка ↗</a>` : '';
-  return `<article class="widget-request"><div class="widget-request-head"><div><span class="widget-ref">${esc(item.reference)}</span><h4>${esc(displayTitle(item))}</h4></div><time>${esc(dt(item.created_at))}</time></div><div class="widget-client"><a href="${presentationMode ? '#' : `tel:${esc(item.phone)}`}">${esc(displayPhone(item.phone))}</a><span>подтверждённый номер</span></div><div class="widget-criteria">${widgetCriteria(item.search_params)}</div><div class="widget-request-actions"><button class="button secondary" data-open="${item.listing_id}">Карточка в базе</button>${sourceLink}</div></article>`;
+function widgetClientCard(lead) {
+  const interests = lead.interests || [];
+  const phone = esc(displayPhone(lead.phone));
+  const phoneMarkup = viewerMode || presentationMode ? `<strong>${phone}</strong>` : `<a href="tel:${esc(lead.phone)}">${phone}</a>`;
+  const status = interests.length ? `Отмечено участков: ${interests.length}` : 'Пока без отмеченных участков';
+  return `<article class="widget-client-card"><div class="widget-client-top"><div><span class="widget-ref">КЛИЕНТ #${esc(lead.id)}</span><h3>${phoneMarkup}</h3><small>Код введён ${esc(dt(lead.verified_at))}</small></div><span class="widget-client-status ${interests.length ? 'interested' : ''}">${esc(status)}</span></div><div class="widget-client-search"><div class="widget-subhead"><strong>Последний поиск</strong><time>${lead.search_updated_at ? esc(dt(lead.search_updated_at)) : 'Пока не выполнялся'}</time></div><div class="widget-criteria">${widgetCriteria(lead.search || {})}</div></div>${interests.length ? `<div class="widget-client-interests"><div class="widget-subhead"><strong>Интересные варианты</strong><span>Отмечены самим посетителем</span></div>${interests.map(widgetInterestCard).join('')}</div>` : ''}</article>`;
+}
+function widgetInterestCard(item) {
+  const url = safeHttpUrl(item.url);
+  const sourceLink = url && !viewerMode ? `<a class="button ghost" href="${esc(url)}" target="_blank" rel="noopener noreferrer">Объявление ↗</a>` : '';
+  const label = item.search_params?.request_type === 'listing_consultation' ? 'Ранее запрошена проверка' : 'Отмечен интерес';
+  return `<div class="widget-interest"><div><span class="widget-ref">${esc(item.reference)} · ${esc(label)}</span><h4>${esc(displayTitle(item))}</h4><small>${esc(dt(item.created_at))}</small></div><div class="widget-interest-actions"><button class="button secondary" data-open="${item.listing_id}">В базе</button>${sourceLink}</div></div>`;
 }
 function widgetCriteria(params = {}) {
   const values = [];
   if (params.q) values.push(`Место: ${presentationMode ? 'выбранное направление' : params.q}`);
   if (params.max_price_usd) values.push(`До $${number(params.max_price_usd)}`);
-  if (params.min_area_sotok || params.max_area_sotok) values.push(`Площадь ${params.min_area_sotok || '—'}–${params.max_area_sotok || '—'} сот.`);
-  if (params.max_distance_km) values.push(`До ${params.max_distance_km} км`);
+  if (params.min_area_sotok || params.max_area_sotok) values.push(`Площадь ${number(params.min_area_sotok)}–${number(params.max_area_sotok)} сот.`);
+  if (params.max_distance_km) values.push(`До ${number(params.max_distance_km)} км`);
   if (params.electricity === 'true') values.push('Нужно электричество');
   if (params.gas === 'true') values.push('Нужен газ');
-  return values.length ? values.map((value) => `<span>${esc(value)}</span>`).join('') : '<span>Без дополнительных фильтров</span>';
+  if (params.water === 'true') values.push('Нужна вода');
+  if (params.sewerage === 'true') values.push('Нужна канализация');
+  return values.length ? values.map((value) => `<span>${esc(value)}</span>`).join('') : '<span>Пока нет данных о поиске</span>';
+}
+function safeHttpUrl(value) {
+  try { const url = new URL(value); return ['http:', 'https:'].includes(url.protocol) ? url.href : ''; }
+  catch { return ''; }
 }
 function healthCard(item) {
   const diagnostics = item.diagnostics || {}; const http = diagnostics.http || {}; const warnings = diagnostics.warnings || [];
@@ -336,6 +354,11 @@ async function logout() {
 }
 
 window.openListing = openDetail;
+function closeMobileMenu() {
+  $('.sidebar').classList.remove('open');
+  $('#sidebarScrim').hidden = true;
+  $('#mobileMenu').setAttribute('aria-expanded', 'false');
+}
 document.addEventListener('click', (event) => {
   const nav = event.target.closest('[data-view]'); if (nav) setView(nav.dataset.view);
   const go = event.target.closest('[data-go]'); if (go) setView(go.dataset.go);
@@ -345,13 +368,20 @@ document.addEventListener('click', (event) => {
   const detailDecision = event.target.closest('[data-detail-decision]'); if (detailDecision) { $$('[data-detail-decision]').forEach((element) => element.classList.remove('active')); detailDecision.classList.add('active'); }
   if (event.target.id === 'saveDecision') saveDetailDecision();
 });
-$$('.nav-item').forEach((element) => element.addEventListener('click', () => setView(element.dataset.view)));
-$('#mobileMenu').onclick = () => $('.sidebar').classList.toggle('open'); $('#scanButton').onclick = () => runJob('scan');
+$('#mobileMenu').onclick = () => {
+  const opened = $('.sidebar').classList.toggle('open');
+  $('#sidebarScrim').hidden = !opened;
+  $('#mobileMenu').setAttribute('aria-expanded', String(opened));
+};
+$('#sidebarScrim').onclick = closeMobileMenu;
+$('#scanButton').onclick = () => runJob('scan');
 $('#activityButton').onclick = () => runJob('activity'); $('#refreshHealthButton').onclick = loadHealth; $('#buildTripButton').onclick = buildTrip;
-$('#refreshWidgetButton').onclick = loadWidgetAdmin; $('#widgetSearchInput').oninput = renderWidgetRequests;
+$('#refreshWidgetButton').onclick = loadWidgetAdmin;
+$('#widgetSearchInput').oninput = renderWidgetClients;
+$('#widgetLeadFilter').onchange = renderWidgetClients;
 $('#newProfileButton').onclick = createProfile; $('#deleteProfileButton').onclick = deleteProfile; $('#profileSelect').onchange = (event) => switchProfile(event.target.value);
 $('#drawerClose').onclick = closeDetail; $('#drawerShade').onclick = closeDetail;
-document.addEventListener('keydown', (event) => { if (event.key === 'Escape' && $('#detailDrawer').classList.contains('open')) closeDetail(); });
+document.addEventListener('keydown', (event) => { if (event.key === 'Escape' && $('#detailDrawer').classList.contains('open')) closeDetail(); else if (event.key === 'Escape') closeMobileMenu(); });
 $('#settingsForm').onsubmit = (event) => { event.preventDefault(); saveSettings(event.currentTarget); };
 $('#setupForm').onsubmit = (event) => { event.preventDefault(); saveSetup(event.currentTarget); };
 $('#restoreButton').onclick = () => $('#restoreFile').click(); $('#restoreFile').onchange = (event) => restoreSelectedBackup(event.target.files[0]);
@@ -363,7 +393,8 @@ $('#logoutButton').onclick = logout;
   if (viewerMode && !presentationMode) { const target = new URL(location.href); target.searchParams.set('presentation', '1'); location.replace(target.href); return; }
   applyPresentationMode();
   applyViewerMode();
-  const hash = location.hash.slice(1); if (['dashboard', 'listings', 'map', 'widget', 'health', 'settings'].includes(hash)) setView(hash);
+  const hash = location.hash.slice(1);
+  setView(['dashboard', 'listings', 'map', 'widget', 'health', 'settings'].includes(hash) ? hash : 'widget');
   await loadProfiles(); await loadSettings(); await Promise.all([loadSummary(), loadDashboard()]);
   const job = await api('/api/jobs'); if (job.running) pollJobs();
 })();

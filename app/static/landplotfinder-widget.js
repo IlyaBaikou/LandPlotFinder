@@ -41,6 +41,7 @@
   let mapProvider = localStorage.getItem(mapKey) || config.defaultMapProvider;
   let mapFocusRef = "";
   let compareRefs = new Set();
+  let interestRefs = new Set();
   let comparisonOpen = false;
   let savedStatuses = new Map();
   let savedStatusCheckedAt = 0;
@@ -236,6 +237,7 @@
     params.set("sort", sortMode);
     try {
       const payload = await api(`/api/public/widget/listings?${params.toString()}`);
+      interestRefs = new Set([...interestRefs, ...(payload.interested_references || [])]);
       items = append ? uniqueItems([...items, ...(payload.items || [])]) : (payload.items || []);
       total = payload.total || 0;
       hasMore = Boolean(payload.has_more);
@@ -280,7 +282,7 @@
       ${notice(message)}
       <form id="phone-form" class="lpf-gate-form">
         <label>Номер телефона<input name="phone" type="tel" autocomplete="tel" placeholder="+375 29 000-00-00" required></label>
-        <label class="lpf-consent"><input name="consent" type="checkbox" required><span>Соглашаюсь на обработку номера для доступа к каталогу и обратной связи по подбору участка. <a href="${safeUrl(config.privacyUrl)}" target="_blank" rel="noopener">Условия</a></span></label>
+        <label class="lpf-consent"><input name="consent" type="checkbox" required><span>Соглашаюсь на обработку номера для доступа к каталогу. Менеджер увидит мой номер, условия поиска и участки, которые я явно отмечу как интересные. <a href="${safeUrl(config.privacyUrl)}" target="_blank" rel="noopener">Условия</a></span></label>
         <button type="submit">Получить код</button>
       </form>`;
     gate.querySelector("#phone-form").addEventListener("submit", requestCode);
@@ -318,11 +320,22 @@
     gate.innerHTML = `<button id="back-phone" class="lpf-back" type="button">← Изменить номер</button><div class="lpf-kicker">Подтверждение</div><h3>${payload.demo_code ? "Ваш индивидуальный демо-код" : "Введите код из SMS"}</h3>${payload.demo_code ? `<div class="lpf-demo"><strong id="demo-code">${html(payload.demo_code)}</strong><button id="copy-demo-code" type="button" aria-label="Скопировать демо-код" title="Скопировать демо-код">⧉ Копировать</button></div>` : `<p>Отправили шестизначный код на ${html(payload.phone || currentPhone)}.</p>`}${notice(message)}<form id="code-form" class="lpf-gate-form"><label>${payload.demo_code ? "Введите ваш демо-код" : "Код из SMS"}<input name="code" inputmode="numeric" autocomplete="one-time-code" maxlength="6" placeholder="000000" required></label><button type="submit">Открыть подборку</button></form>`;
     gate.querySelector("#back-phone").addEventListener("click", () => renderPhoneGate());
     gate.querySelector("#copy-demo-code")?.addEventListener("click", async (event) => {
+      const button = event.currentTarget;
       try {
-        await navigator.clipboard.writeText(payload.demo_code);
-        event.currentTarget.textContent = "✓ Скопировано";
+        if (navigator.clipboard?.writeText) {
+          await navigator.clipboard.writeText(payload.demo_code);
+        } else {
+          const field = document.createElement("textarea");
+          field.value = payload.demo_code;
+          gate.appendChild(field);
+          field.select();
+          const copied = document.execCommand("copy");
+          field.remove();
+          if (!copied) throw new Error("Copy unavailable");
+        }
+        button.textContent = "✓ Скопировано";
       } catch (_) {
-        event.currentTarget.textContent = "Выделите код выше";
+        button.textContent = "Выделите код выше";
       }
     });
     gate.querySelector("#code-form").addEventListener("submit", (event) => verifyCode(event, payload));
@@ -389,12 +402,13 @@
     const badge = unavailable
       ? '<span class="lpf-availability">Снято</span>'
       : `<span class="lpf-score">${html(item.match_score)}% совпадение</span>`;
-    return `<article class="lpf-card ${unavailable ? "lpf-unavailable" : ""}" data-card-ref="${attr(item.reference)}"><div class="lpf-cardtop"><span class="lpf-reference">${html(item.reference)}</span>${badge}</div>${unavailable ? '<div class="lpf-unavailable-note">Объявление больше не публикуется. Сохранённая карточка оставлена для истории.</div>' : ""}<h3 title="${attr(item.title)}">${html(item.title)}</h3><p class="lpf-location" title="${attr(item.location)}">≈ ${html(item.location)}</p><div class="lpf-facts"><div><span>Цена</span><strong>${item.price_usd == null ? "—" : `$${number(item.price_usd)}`}</strong></div><div><span>Площадь</span><strong>${item.area_sotok == null ? "—" : `${number(item.area_sotok)} сот.`}</strong></div><div><span>До МКАД</span><strong>${item.distance_mkad_km == null ? "—" : `${number(item.distance_mkad_km)} км`}</strong></div></div><div class="lpf-card-insights"><span class="lpf-location-score">Локация <strong>${item.location_score == null ? "изучается" : `${html(item.location_score)}/100`}</strong></span><span class="lpf-fresh">${freshness(item.last_seen_at)}</span></div><div class="lpf-utils">${utility(item.electricity, "Электричество")}${utility(item.gas, "Газ")}${utility(item.water, "Вода")}${utility(item.sewerage, "Канализация")}</div>${options.savedView ? `<button class="lpf-compare-toggle ${compare ? "active" : ""}" type="button" data-compare="${attr(item.reference)}" aria-pressed="${compare}">${compare ? "✓ Выбрано для сравнения" : "+ Добавить к сравнению"}</button>` : ""}${listingLink(item, unavailable)}<div class="lpf-actions"><button class="lpf-secondary" type="button" data-details="${attr(item.reference)}">Подробнее</button><button type="button" data-save="${attr(item.reference)}">${saved ? "✓ Сохранено" : "♡ Сохранить"}</button></div></article>`;
+    return `<article class="lpf-card ${unavailable ? "lpf-unavailable" : ""}" data-card-ref="${attr(item.reference)}"><div class="lpf-cardtop"><span class="lpf-reference">${html(item.reference)}</span>${badge}</div>${unavailable ? '<div class="lpf-unavailable-note">Объявление больше не публикуется. Сохранённая карточка оставлена для истории.</div>' : ""}<h3 title="${attr(item.title)}">${html(item.title)}</h3><p class="lpf-location" title="${attr(item.location)}">≈ ${html(item.location)}</p><div class="lpf-facts"><div><span>Цена</span><strong>${item.price_usd == null ? "—" : `$${number(item.price_usd)}`}</strong></div><div><span>Площадь</span><strong>${item.area_sotok == null ? "—" : `${number(item.area_sotok)} сот.`}</strong></div><div><span>До МКАД</span><strong>${item.distance_mkad_km == null ? "—" : `${number(item.distance_mkad_km)} км`}</strong></div></div><div class="lpf-card-insights"><span class="lpf-location-score">Локация <strong>${item.location_score == null ? "изучается" : `${html(item.location_score)}/100`}</strong></span><span class="lpf-fresh">${freshness(item.last_seen_at)}</span></div><div class="lpf-utils">${utility(item.electricity, "Электричество")}${utility(item.gas, "Газ")}${utility(item.water, "Вода")}${utility(item.sewerage, "Канализация")}</div>${options.savedView ? `<button class="lpf-compare-toggle ${compare ? "active" : ""}" type="button" data-compare="${attr(item.reference)}" aria-pressed="${compare}">${compare ? "✓ Выбрано для сравнения" : "+ Добавить к сравнению"}</button>` : ""}${listingLink(item, unavailable)}${interestButton(item, unavailable)}<div class="lpf-actions"><button class="lpf-secondary" type="button" data-details="${attr(item.reference)}">Подробнее</button><button type="button" data-save="${attr(item.reference)}">${saved ? "✓ Сохранено" : "♡ Сохранить"}</button></div></article>`;
   }
 
   function wireCards(scope, sourceItems) {
     scope.querySelectorAll("[data-details]").forEach((button) => button.addEventListener("click", () => { const item = sourceItems.find((candidate) => candidate.reference === button.dataset.details) || findItem(button.dataset.details); if (item) showDetails(item); }));
     scope.querySelectorAll("[data-save]").forEach((button) => button.addEventListener("click", () => { const item = sourceItems.find((candidate) => candidate.reference === button.dataset.save) || findItem(button.dataset.save); if (item) toggleSaved(item); }));
+    scope.querySelectorAll("[data-interest]").forEach((button) => button.addEventListener("click", () => { const item = sourceItems.find((candidate) => candidate.reference === button.dataset.interest) || findItem(button.dataset.interest); if (item) markInterest(item, button); }));
     scope.querySelectorAll("[data-compare]").forEach((button) => button.addEventListener("click", () => toggleCompare(button.dataset.compare, !compareRefs.has(button.dataset.compare))));
   }
 
@@ -405,7 +419,7 @@
     dialog.id = "lpf-dialog";
     dialog.className = "lpf-dialog-layer";
     const similar = similarItems(item).slice(0, 3);
-    dialog.innerHTML = `<div class="lpf-dialog lpf-detail" role="dialog" aria-modal="true" aria-labelledby="detail-title"><button class="lpf-dialog-close" type="button" aria-label="Закрыть">×</button><div class="lpf-detail-head"><div><div class="lpf-reference">${html(item.reference)}</div><h3 id="detail-title">${html(item.title)}</h3><p>≈ ${html(item.location)}</p></div><div class="lpf-big-score"><strong>${html(item.match_score)}%</strong><span>совпадение</span></div></div>${unavailable ? '<div class="lpf-unavailable-banner"><strong>Объявление снято с публикации</strong><span>Мы оставили сохранённую копию, чтобы вариант не исчез бесследно.</span></div>' : ""}<div class="lpf-detail-grid"><section><div class="lpf-section-title">Основные параметры</div>${detailFacts(item)}</section><section><div class="lpf-section-title">Почему подходит</div>${bulletList(item.match_reasons, "good")}${bulletList(item.warnings, "warning")}</section><section><div class="lpf-section-title">Коммуникации и участок</div>${detailUtilities(item)}</section><section><div class="lpf-section-title">Оценка локации</div>${locationDetail(item)}</section></div>${approximateMapActions(item)}${similar.length ? `<section class="lpf-similar"><div class="lpf-section-title">Похожие варианты</div><div class="lpf-similar-list">${similar.map((candidate) => `<button type="button" data-similar="${attr(candidate.reference)}"><strong>${html(candidate.reference)}</strong><span>${candidate.price_usd == null ? "Цена уточняется" : `$${number(candidate.price_usd)}`} · ${candidate.area_sotok == null ? "—" : `${number(candidate.area_sotok)} сот.`}</span></button>`).join("")}</div></section>` : ""}<div class="lpf-detail-actions"><button class="lpf-secondary" id="detail-close" type="button">Вернуться</button><button class="lpf-secondary" id="detail-save" type="button">${isSaved(item.reference) ? "✓ Сохранено" : "♡ Сохранить"}</button>${listingLink(item, unavailable, true)}</div><small>Сохранённые варианты остаются только в вашем браузере.</small></div>`;
+    dialog.innerHTML = `<div class="lpf-dialog lpf-detail" role="dialog" aria-modal="true" aria-labelledby="detail-title"><button class="lpf-dialog-close" type="button" aria-label="Закрыть">×</button><div class="lpf-detail-head"><div><div class="lpf-reference">${html(item.reference)}</div><h3 id="detail-title">${html(item.title)}</h3><p>≈ ${html(item.location)}</p></div><div class="lpf-big-score"><strong>${html(item.match_score)}%</strong><span>совпадение</span></div></div>${unavailable ? '<div class="lpf-unavailable-banner"><strong>Объявление снято с публикации</strong><span>Мы оставили сохранённую копию, чтобы вариант не исчез бесследно.</span></div>' : ""}<div class="lpf-detail-grid"><section><div class="lpf-section-title">Основные параметры</div>${detailFacts(item)}</section><section><div class="lpf-section-title">Почему подходит</div>${bulletList(item.match_reasons, "good")}${bulletList(item.warnings, "warning")}</section><section><div class="lpf-section-title">Коммуникации и участок</div>${detailUtilities(item)}</section><section><div class="lpf-section-title">Оценка локации</div>${locationDetail(item)}</section></div>${approximateMapActions(item)}${similar.length ? `<section class="lpf-similar"><div class="lpf-section-title">Похожие варианты</div><div class="lpf-similar-list">${similar.map((candidate) => `<button type="button" data-similar="${attr(candidate.reference)}"><strong>${html(candidate.reference)}</strong><span>${candidate.price_usd == null ? "Цена уточняется" : `$${number(candidate.price_usd)}`} · ${candidate.area_sotok == null ? "—" : `${number(candidate.area_sotok)} сот.`}</span></button>`).join("")}</div></section>` : ""}<div class="lpf-detail-actions"><button class="lpf-secondary" id="detail-close" type="button">Вернуться</button><button class="lpf-secondary" id="detail-save" type="button">${isSaved(item.reference) ? "✓ Сохранено" : "♡ Сохранить"}</button>${listingLink(item, unavailable, true)}${interestButton(item, unavailable, true)}</div><small>Сохранённые варианты остаются в браузере. Отмеченный интерес и номер телефона увидит менеджер.</small></div>`;
     updateDialogTopOffset(dialog);
     root.appendChild(dialog);
     lockPageScroll();
@@ -415,7 +429,26 @@
     dialog.querySelector(".lpf-dialog-close").addEventListener("click", closeDialog);
     dialog.querySelector("#detail-close").addEventListener("click", closeDialog);
     dialog.querySelector("#detail-save").addEventListener("click", () => toggleSaved(item, true));
+    dialog.querySelector("#detail-interest")?.addEventListener("click", (event) => markInterest(item, event.currentTarget));
     dialog.querySelectorAll("[data-similar]").forEach((button) => button.addEventListener("click", () => { const candidate = findItem(button.dataset.similar); if (candidate) showDetails(candidate); }));
+  }
+
+  async function markInterest(item, button) {
+    if (interestRefs.has(item.reference) || isUnavailable(item.reference)) return;
+    setBusy(button, true, "Сохраняем интерес…");
+    try {
+      await api("/api/public/widget/interests", {
+        method: "POST",
+        body: { reference: item.reference, search_params: lastSearch, source_page: window.location.href },
+      });
+      interestRefs.add(item.reference);
+      renderWorkspace();
+      if (root.getElementById("lpf-dialog")) showDetails(item);
+    } catch (error) {
+      button.disabled = false;
+      button.textContent = "Повторить отметку";
+      setStatus(error.message, "error");
+    }
   }
 
   function detailFacts(item) {
@@ -611,7 +644,7 @@
     if (!response.ok) { const error = new Error(payload.detail || "Не удалось выполнить запрос. Попробуйте ещё раз."); error.status = response.status; throw error; }
     return payload;
   }
-  function clearToken() { token = ""; savedStatuses = new Map(); savedStatusCheckedAt = 0; localStorage.removeItem(tokenKey); sessionStorage.removeItem(tokenKey); }
+  function clearToken() { token = ""; interestRefs = new Set(); savedStatuses = new Map(); savedStatusCheckedAt = 0; localStorage.removeItem(tokenKey); sessionStorage.removeItem(tokenKey); }
   function setStatus(text, kind) { const node = app.querySelector("#search-status"); if (!node) return; node.className = `lpf-status ${kind || ""}`; node.textContent = text; }
   function setBusy(button, busy, label) { if (!button) return; button.disabled = busy; button.textContent = label; }
   function notice(message) { return message ? `<div class="lpf-notice">${html(message)}</div>` : ""; }
@@ -624,6 +657,11 @@
     const url = safeUrl(item.url);
     if (unavailable || url === "#") return "";
     return `<a class="${inDetail ? "lpf-source-link lpf-source-detail" : "lpf-source-link"}" href="${url}" target="_blank" rel="noopener noreferrer">Открыть объявление ↗</a>`;
+  }
+  function interestButton(item, unavailable = false, inDetail = false) {
+    if (unavailable) return "";
+    const marked = interestRefs.has(item.reference);
+    return `<button class="lpf-interest ${marked ? "active" : ""}" ${inDetail ? 'id="detail-interest"' : `data-interest="${attr(item.reference)}"`} type="button" ${marked ? "disabled" : ""}>${marked ? "✓ Интерес отмечен" : "Интересен этот участок"}</button>`;
   }
   function confidenceLabel(value) { return ({ high: "высокая", medium: "средняя", low: "предварительная" })[value] || "предварительная"; }
   function freshness(value) { if (!value) return "Дата уточняется"; const days = Math.floor((Date.now() - new Date(value).getTime()) / 86400000); if (days <= 0) return "Проверено сегодня"; if (days === 1) return "Проверено вчера"; return `Проверено ${days} дн. назад`; }
@@ -646,6 +684,8 @@
       .lpf-demo{display:flex;align-items:center;justify-content:space-between;gap:12px}.lpf-demo strong{font-size:20px;letter-spacing:.14em}.lpf-demo button{min-height:34px;padding:6px 12px;background:#ffe395;white-space:nowrap;font-size:11px}
       .lpf-utils .lpf-utility-present{background:#e6f1e3;color:#275b2c}.lpf-utils .lpf-utility-absent{background:#f8e6e4;color:#952e28}.lpf-utils .lpf-utility-unknown{background:#efefed;color:#676762}.lpf-utility-table .absent{color:#952e28}
       .lpf-source-link{display:inline-flex;align-items:center;justify-content:center;min-height:36px;margin:0 0 10px;color:#6f4800;font-size:11px;font-weight:750;text-decoration:underline;text-underline-offset:3px}.lpf-source-link:hover{text-decoration:none}.lpf-source-detail{min-height:46px;margin:0;padding:11px 16px;border:1px solid #171717;border-radius:999px;color:#171717;background:#fff;text-decoration:none;text-align:center}.lpf-detail-actions{grid-template-columns:1fr 1fr 1.4fr}
+      .lpf-interest{background:#fff1be;border:1px solid #d8bb64;color:#4e3b12;min-height:42px;margin:0 0 10px}.lpf-interest.active{background:#e6f1e3;border-color:#b9d4ba;color:#275b2c;opacity:1}.lpf-detail-actions .lpf-interest{margin:0}.lpf-card>.lpf-interest{width:100%}.lpf-detail-actions{grid-template-columns:repeat(2,minmax(0,1fr))}.lpf-detail-actions .lpf-source-detail,.lpf-detail-actions .lpf-interest{width:100%}
+      @media(max-width:700px){.lpf-detail-actions{grid-template-columns:1fr}}
       @media(min-width:981px){.lpf-header{padding:27px 32px 21px}.lpf-header h2{font-size:clamp(25px,2.7vw,34px);max-width:750px}.lpf-kicker{margin-bottom:9px}.lpf-filters{padding:20px 32px;gap:11px}.lpf-filters input,.lpf-filters select{height:46px;font-size:14px}.lpf-status{margin:17px 32px 0}.lpf-workspace{padding-top:12px}.lpf-toolbar{padding-left:32px;padding-right:32px}.lpf-grid{padding:17px 32px 28px;gap:15px}.lpf-bottom{padding:0 32px 18px}}
     `;
   }

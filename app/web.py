@@ -56,6 +56,7 @@ from app.models import (
     ScanRunModel,
     WidgetInterestModel,
     WidgetLeadModel,
+    WidgetSearchContextModel,
 )
 from app.source_health import health_payloads
 from app.web_config import (
@@ -71,6 +72,7 @@ from app.widget_service import (
     notify_lead,
     record_interest,
     request_code,
+    save_search_context,
     verified_lead,
     verify_code,
 )
@@ -294,6 +296,7 @@ def create_app(settings: Optional[Settings] = None) -> FastAPI:
                     payload.phone,
                     payload.code,
                 )
+                first_verified = result.pop("first_verified")
                 lead = verified_lead(session, result["token"])
                 notification = {
                     "event": "lead_verified",
@@ -304,7 +307,8 @@ def create_app(settings: Optional[Settings] = None) -> FastAPI:
                 }
         except WidgetError as exc:
             raise HTTPException(status_code=exc.status_code, detail=exc.detail) from exc
-        notify_lead(base_settings, notification)
+        if first_verified:
+            notify_lead(base_settings, notification)
         return result
 
     @app.get("/api/public/widget/preview")
@@ -371,7 +375,27 @@ def create_app(settings: Optional[Settings] = None) -> FastAPI:
         profile = get_profile(config, selected_profile_id)
         try:
             with _database(base_settings) as session:
-                verified_lead(session, _bearer_token(request))
+                lead = verified_lead(session, _bearer_token(request))
+                save_search_context(
+                    session,
+                    lead,
+                    {
+                        key: value
+                        for key, value in {
+                            "q": q,
+                            "max_price_usd": max_price_usd,
+                            "min_area_sotok": min_area_sotok,
+                            "max_area_sotok": max_area_sotok,
+                            "max_distance_km": max_distance_km,
+                            "electricity": "true" if electricity else None,
+                            "gas": "true" if gas else None,
+                            "water": "true" if water else None,
+                            "sewerage": "true" if sewerage else None,
+                            "profile_id": selected_profile_id,
+                        }.items()
+                        if value is not None and value != ""
+                    },
+                )
                 statement = _widget_listing_statement(
                     selected_profile_id,
                     q,
@@ -402,6 +426,11 @@ def create_app(settings: Optional[Settings] = None) -> FastAPI:
                     if location_keys
                     else {}
                 )
+                interested_ids = session.scalars(
+                    select(WidgetInterestModel.listing_id).where(
+                        WidgetInterestModel.lead_id == lead.id
+                    )
+                ).all()
         except WidgetError as exc:
             raise HTTPException(status_code=exc.status_code, detail=exc.detail) from exc
 
@@ -434,8 +463,12 @@ def create_app(settings: Optional[Settings] = None) -> FastAPI:
                 "limit": limit,
                 "has_more": offset + limit < total,
                 "items": items[offset : offset + limit],
+                "interested_references": [
+                    _public_listing_ref(base_settings.widget_auth_secret, listing_id)
+                    for listing_id in interested_ids
+                ],
             },
-            headers={"Cache-Control": "private, max-age=60"},
+            headers={"Cache-Control": "private, no-store"},
         )
 
     @app.get("/api/public/widget/options")
@@ -530,14 +563,15 @@ def create_app(settings: Optional[Settings] = None) -> FastAPI:
                             base_settings.widget_auth_secret,
                             listing.id,
                         ),
-                        "request_type": "listing_consultation",
+                        "request_type": "listing_interest",
                     },
                     payload.source_page,
                 )
         except WidgetError as exc:
             raise HTTPException(status_code=exc.status_code, detail=exc.detail) from exc
-        notify_lead(base_settings, notification)
-        return {"ok": True, "message": "Запрос передан специалисту"}
+        if notification["created"]:
+            notify_lead(base_settings, notification)
+        return {"ok": True, "message": "Интерес к варианту отмечен"}
 
     @app.get("/api/widget/leads")
     def widget_leads(request: Request) -> Dict[str, Any]:
@@ -550,12 +584,15 @@ def create_app(settings: Optional[Settings] = None) -> FastAPI:
             interests = session.scalars(
                 select(WidgetInterestModel).order_by(WidgetInterestModel.created_at.desc())
             ).all()
+            contexts = session.scalars(select(WidgetSearchContextModel)).all()
+        contexts_by_lead = {item.lead_id: item for item in contexts}
         grouped: Dict[int, List[WidgetInterestModel]] = {}
         for interest in interests:
             grouped.setdefault(interest.lead_id, []).append(interest)
         value = {
             "total": len(leads),
             "requests_total": len(interests),
+            "interests_total": len(interests),
             "items": [
                 {
                     "id": lead.id,
@@ -564,6 +601,16 @@ def create_app(settings: Optional[Settings] = None) -> FastAPI:
                     "created_at": _iso(lead.created_at),
                     "source_page": lead.source_page,
                     "utm": lead.utm,
+                    "search": (
+                        contexts_by_lead[lead.id].criteria
+                        if lead.id in contexts_by_lead
+                        else {}
+                    ),
+                    "search_updated_at": (
+                        _iso(contexts_by_lead[lead.id].updated_at)
+                        if lead.id in contexts_by_lead
+                        else None
+                    ),
                     "interests": [
                         {
                             "listing_id": item.listing_id,
@@ -1844,6 +1891,20 @@ def _viewer_leads(value: Dict[str, Any]) -> Dict[str, Any]:
     result = copy.deepcopy(value)
     for lead in result.get("items", []):
         lead.update({"phone": "+375 •• •••-••-••", "source_page": "", "utm": {}})
+        lead["search"] = {
+            key: item
+            for key, item in (lead.get("search") or {}).items()
+            if key in {
+                "max_price_usd",
+                "min_area_sotok",
+                "max_area_sotok",
+                "max_distance_km",
+                "electricity",
+                "gas",
+                "water",
+                "sewerage",
+            }
+        }
         for interest in lead.get("interests", []):
             reference = interest.get("reference") or "LP-DEMO"
             interest.update(

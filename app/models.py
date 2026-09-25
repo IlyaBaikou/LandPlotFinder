@@ -230,6 +230,22 @@ class WidgetInterestModel(Base):
     )
 
 
+class WidgetSearchContextModel(Base):
+    __tablename__ = "widget_search_contexts"
+
+    id: Mapped[int] = mapped_column(Integer, primary_key=True)
+    lead_id: Mapped[int] = mapped_column(
+        ForeignKey("widget_leads.id", ondelete="CASCADE"),
+        nullable=False,
+        unique=True,
+        index=True,
+    )
+    criteria: Mapped[Dict[str, Any]] = mapped_column(JSON, nullable=False, default=dict)
+    updated_at: Mapped[datetime] = mapped_column(
+        DateTime(timezone=True), nullable=False, default=utcnow
+    )
+
+
 class ScanRunModel(Base):
     __tablename__ = "scan_runs"
 

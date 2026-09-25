@@ -10,6 +10,7 @@ from app.models import (
     LocationProfileModel,
     WidgetInterestModel,
     WidgetLeadModel,
+    WidgetSearchContextModel,
     utcnow,
 )
 from app.web import _electricity_label, _utility_label, create_app
@@ -206,9 +207,14 @@ def test_web_profiles_history_routes_health_and_backup(tmp_path) -> None:
         assert client.delete(f"/api/profiles/{second_id}").status_code == 200
 
 
-def test_public_widget_phone_search_and_interest(tmp_path) -> None:
+def test_public_widget_phone_search_and_interest(tmp_path, monkeypatch) -> None:
     settings = _settings(tmp_path)
     listing_id = _seed_listing(settings)
+    notifications = []
+    monkeypatch.setattr(
+        "app.web.notify_lead",
+        lambda _settings, payload: notifications.append(payload),
+    )
 
     with TestClient(create_app(settings)) as client:
         assert client.get("/api/public/widget/listings").status_code == 401
@@ -266,6 +272,8 @@ def test_public_widget_phone_search_and_interest(tmp_path) -> None:
             },
         )
         assert verified.status_code == 200
+        assert "first_verified" not in verified.json()
+        assert [item["event"] for item in notifications] == ["lead_verified"]
         assert verified.json()["expires_in_seconds"] == 30 * 24 * 60 * 60
         token = verified.json()["token"]
         headers = {"Authorization": f"Bearer {token}"}
@@ -287,6 +295,7 @@ def test_public_widget_phone_search_and_interest(tmp_path) -> None:
         )
         assert catalog.status_code == 200
         assert catalog.json()["total"] == 1
+        assert catalog.json()["interested_references"] == []
         public_item = catalog.json()["items"][0]
         assert public_item["reference"].startswith("LP-")
         assert public_item["title"] == "Участок 10 сот. в районе Новосёлки"
@@ -356,7 +365,24 @@ def test_public_widget_phone_search_and_interest(tmp_path) -> None:
             },
         )
         assert interest.status_code == 200
-        assert interest.json()["message"] == "Запрос передан специалисту"
+        assert interest.json()["message"] == "Интерес к варианту отмечен"
+
+        after_interest = client.get(
+            "/api/public/widget/listings",
+            headers=headers,
+            params={"q": "Новосёлки", "max_price_usd": 40_000},
+        ).json()
+        assert after_interest["interested_references"] == [public_item["reference"]]
+        repeated_interest = client.post(
+            "/api/public/widget/interests",
+            headers=headers,
+            json={"reference": public_item["reference"]},
+        )
+        assert repeated_interest.status_code == 200
+        assert [item["event"] for item in notifications] == [
+            "lead_verified",
+            "listing_interest_marked",
+        ]
 
         missing_interest = client.post(
             "/api/public/widget/interests",
@@ -368,7 +394,15 @@ def test_public_widget_phone_search_and_interest(tmp_path) -> None:
         leads = client.get("/api/widget/leads").json()
         assert leads["total"] == 1
         assert leads["requests_total"] == 1
+        assert leads["interests_total"] == 1
         assert leads["items"][0]["phone"] == "+375291234567"
+        assert leads["items"][0]["search"]["q"] == "Новосёлки"
+        assert leads["items"][0]["search"]["max_price_usd"] == "40000.0"
+        assert leads["items"][0]["search_updated_at"]
+        assert (
+            leads["items"][0]["interests"][0]["search_params"]["request_type"]
+            == "listing_interest"
+        )
         assert leads["items"][0]["interests"][0]["listing_id"] == listing_id
         assert leads["items"][0]["interests"][0]["reference"] == public_item["reference"]
 
@@ -392,10 +426,6 @@ def test_public_widget_phone_search_and_interest(tmp_path) -> None:
                 json={"reference": public_item["reference"]},
             ).status_code
             == 404
-        )
-        assert (
-            leads["items"][0]["interests"][0]["search_params"]["request_type"]
-            == "listing_consultation"
         )
 
 
@@ -484,6 +514,12 @@ def test_viewer_role_is_read_only_and_masks_sensitive_data(tmp_path) -> None:
         session.add(lead)
         session.flush()
         session.add(
+            WidgetSearchContextModel(
+                lead_id=lead.id,
+                criteria={"q": "секретная деревня", "max_price_usd": "40000"},
+            )
+        )
+        session.add(
             WidgetInterestModel(
                 lead_id=lead.id,
                 listing_id=listing_id,
@@ -552,6 +588,7 @@ def test_viewer_role_is_read_only_and_masks_sensitive_data(tmp_path) -> None:
 
         leads = client.get("/api/widget/leads").json()
         assert leads["items"][0]["phone"] == "+375 •• •••-••-••"
+        assert "q" not in leads["items"][0]["search"]
         assert leads["items"][0]["source_page"] == ""
         interest = leads["items"][0]["interests"][0]
         assert interest["url"] is None

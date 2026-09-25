@@ -4,12 +4,12 @@
   <meta charset="utf-8">
   <meta name="viewport" content="width=device-width, initial-scale=1">
   <meta name="theme-color" content="#31473a">
-  <title>LandPlotFinder — поиск участка</title>
-  <meta name="description" content="Локальная панель мониторинга объявлений о земельных участках">
+  <title>LandPlotFinder — клиенты и каталог</title>
+  <meta name="description" content="Панель клиентов и каталога объявлений о земельных участках">
   <link rel="preconnect" href="https://unpkg.com">
   <link rel="stylesheet" href="https://unpkg.com/leaflet@1.9.4/dist/leaflet.css">
   <link rel="stylesheet" href="/static/styles.css">
-  <link rel="stylesheet" href="/static/v11.css">
+  <link rel="stylesheet" href="/static/v11.css?v=20260925-clients">
 </head>
 <body>
   <div class="app-shell">
@@ -20,24 +20,26 @@
       </a>
 
       <nav class="nav" aria-label="Основная навигация">
-        <button class="nav-item active" data-view="dashboard"><span>⌁</span>Обзор</button>
+        <div class="nav-group-label">Работа с клиентами</div>
+        <button class="nav-item active" data-view="widget"><span>◎</span>Клиенты</button>
+        <div class="nav-group-label">Каталог и сервис</div>
+        <button class="nav-item" data-view="dashboard"><span>⌁</span>Обзор базы</button>
         <button class="nav-item" data-view="listings"><span>▤</span>Объекты</button>
         <button class="nav-item" data-view="map"><span>⌖</span>Карта</button>
-        <button class="nav-item" data-view="widget"><span>◎</span>Виджет</button>
         <button class="nav-item" data-view="health"><span>◉</span>Источники</button>
         <button class="nav-item" data-view="settings"><span>⚙</span>Настройки</button>
       </nav>
 
       <div class="sidebar-footer">
         <div class="service-state"><i id="serviceDot"></i><span id="serviceText">Локальный сервис</span></div>
-        <small>Данные хранятся на этом компьютере</small>
+        <small>Контакты доступны только в закрытой панели</small>
         <button class="logout-button" id="logoutButton" type="button">Выйти</button>
       </div>
     </aside>
 
     <main class="main">
       <header class="topbar">
-        <button class="mobile-menu" id="mobileMenu" aria-label="Открыть меню">☰</button>
+        <button class="mobile-menu" id="mobileMenu" aria-label="Открыть меню" aria-expanded="false">☰</button>
         <div>
           <p class="eyebrow" id="pageEyebrow">Ваш поиск</p>
           <h1 id="pageTitle">Добрый день</h1>
@@ -50,7 +52,7 @@
         </div>
       </header>
 
-      <section class="view active" id="view-dashboard">
+      <section class="view" id="view-dashboard">
         <div class="hero-card">
           <div>
             <p class="eyebrow">Короткий список</p>
@@ -102,27 +104,19 @@
         <div class="route-results" id="routeResults"></div>
       </section>
 
-      <section class="view" id="view-widget">
+      <section class="view active" id="view-widget">
         <div class="section-intro">
-          <div><p class="eyebrow">Клиентский подбор</p><h2>Обращения из виджета</h2><p>Здесь собраны подтверждённые клиенты, их условия поиска и запросы помощи по конкретным вариантам.</p></div>
+          <div><p class="eyebrow">Умный подбор участка</p><h2>Клиенты и их интересы</h2><p>Контакт, последние параметры поиска и только те участки, которые посетитель сам отметил как интересные.</p></div>
           <button class="button secondary" id="refreshWidgetButton">Обновить</button>
         </div>
         <div class="stats-grid widget-stats">
-          <article class="stat-card"><span>Подтвердили телефон</span><strong id="widgetLeadCount">—</strong><small>клиентов получили доступ</small></article>
-          <article class="stat-card accent"><span>Попросили проверить</span><strong id="widgetRequestCount">—</strong><small>конкретных объявлений</small></article>
-          <article class="stat-card muted"><span>За последние 7 дней</span><strong id="widgetRecentCount">—</strong><small>новых обращений</small></article>
+          <article class="stat-card"><span>Посетители</span><strong id="widgetLeadCount">—</strong><small>ввели номер и код</small></article>
+          <article class="stat-card accent"><span>Интерес к участкам</span><strong id="widgetRequestCount">—</strong><small>явно отмеченных вариантов</small></article>
+          <article class="stat-card muted"><span>За последние 7 дней</span><strong id="widgetRecentCount">—</strong><small>новых контактов</small></article>
         </div>
-        <div class="widget-admin-layout">
-          <section class="panel">
-            <div class="panel-head widget-panel-head"><div><p class="eyebrow">Очередь менеджера</p><h3>Нужна помощь</h3></div><label class="search-field widget-search"><span>⌕</span><input id="widgetSearchInput" placeholder="Телефон, код LP или объявление"></label></div>
-            <div class="widget-request-list" id="widgetRequestList"><div class="empty">Загружаем обращения…</div></div>
-          </section>
-          <aside class="panel widget-guide">
-            <p class="eyebrow">Как это работает</p><h3>Контекст не потеряется</h3>
-            <ol><li>Клиент задаёт условия и подтверждает телефон.</li><li>Сохранённые варианты остаются только у него в браузере.</li><li>По кнопке помощи сюда попадает точное исходное объявление вместе с условиями поиска.</li></ol>
-            <a class="button ghost full" href="/widget-demo" target="_blank" rel="noopener">Открыть виджет ↗</a>
-          </aside>
-        </div>
+        <div class="widget-toolbar"><label class="search-field widget-search"><span>⌕</span><input id="widgetSearchInput" type="search" placeholder="Телефон, место или код участка" aria-label="Поиск клиентов"></label><select id="widgetLeadFilter" aria-label="Фильтр клиентов"><option value="all">Все клиенты</option><option value="interested">Отметили участок</option><option value="recent">За 7 дней</option></select><a class="button ghost" href="/widget-demo" target="_blank" rel="noopener">Открыть квиз ↗</a></div>
+        <div class="widget-request-list" id="widgetRequestList"><div class="empty">Загружаем клиентов…</div></div>
+        <p class="widget-privacy-note">Сохранённое в браузере избранное здесь не отображается. В демо-режиме код не подтверждает владение номером.</p>
       </section>
 
       <section class="view" id="view-health">
@@ -189,6 +183,8 @@
     </main>
   </div>
 
+  <button class="sidebar-scrim" id="sidebarScrim" type="button" aria-label="Закрыть меню" hidden></button>
+
   <div class="modal-backdrop hidden" id="setupModal">
     <form class="setup-card" id="setupForm">
       <div class="setup-mark">⌂</div><p class="eyebrow">Первый запуск</p><h2>Настроим ваш поиск</h2><p>Выберите основные критерии. Их можно изменить в любой момент.</p>
@@ -212,6 +208,6 @@
   <div class="toast" id="toast" role="status"></div>
 
   <script src="https://unpkg.com/leaflet@1.9.4/dist/leaflet.js"></script>
-  <script src="/static/app.js?v=20260827-viewer"></script>
+  <script src="/static/app.js?v=20260925-clients"></script>
 </body>
 </html>
