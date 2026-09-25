@@ -86,6 +86,16 @@ class TelegramWebhookApplication:
             )
 
     def _process_message(self, message: dict) -> None:
+        chat = message.get("chat") or {}
+        if chat.get("type") == "private" and _command(str(message.get("text") or "")) == "/id":
+            chat_id = chat.get("id")
+            if chat_id is not None:
+                self._api(
+                    "sendMessage",
+                    chat_id=chat_id,
+                    text=f"Ваш chat ID: {chat_id}",
+                )
+            return
         if not self._allowed_chat(message):
             return
         text = str(message.get("text") or message.get("caption") or "")

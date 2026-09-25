@@ -1,4 +1,14 @@
-from app.webhook import _command, _selected_keyboard
+from app.webhook import TelegramWebhookApplication, _command, _selected_keyboard
+
+
+def test_private_id_command_replies_without_group_access() -> None:
+    app = TelegramWebhookApplication.__new__(TelegramWebhookApplication)
+    calls = []
+    app._api = lambda method, **kwargs: calls.append((method, kwargs))
+
+    app._process_message({"chat": {"id": 12345, "type": "private"}, "text": "/id"})
+
+    assert calls == [("sendMessage", {"chat_id": 12345, "text": "Ваш chat ID: 12345"})]
 
 
 def test_command_removes_bot_username() -> None:
