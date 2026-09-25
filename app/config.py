@@ -89,6 +89,8 @@ class Settings:
     widget_lead_webhook_token: Optional[str] = None
     widget_telegram_bot_token: Optional[str] = None
     widget_telegram_chat_id: Optional[str] = None
+    widget_client_bot_username: Optional[str] = None
+    widget_client_bot_token: Optional[str] = None
     web_scheduler_enabled: bool = True
     admin_username: str = "admin"
     admin_password: Optional[str] = None
@@ -125,9 +127,7 @@ def load_settings(env_file: Optional[str] = None) -> Settings:
         discovery_max_area_sotok=float(os.getenv("DISCOVERY_MAX_AREA_SOTOK", "15")),
         preferred_distance_km=float(os.getenv("PREFERRED_DISTANCE_KM", "30")),
         max_distance_km=float(os.getenv("MAX_DISTANCE_KM", "30")),
-        discovery_max_distance_km=float(
-            os.getenv("DISCOVERY_MAX_DISTANCE_KM", "30")
-        ),
+        discovery_max_distance_km=float(os.getenv("DISCOVERY_MAX_DISTANCE_KM", "30")),
         primary_electricity_kw=float(os.getenv("PRIMARY_ELECTRICITY_KW", "20")),
         secondary_electricity_kw=float(os.getenv("SECONDARY_ELECTRICITY_KW", "6")),
     )
@@ -140,20 +140,12 @@ def load_settings(env_file: Optional[str] = None) -> Settings:
         http_retries=int(os.getenv("HTTP_RETRIES", "3")),
         request_delay_seconds=float(os.getenv("REQUEST_DELAY_SECONDS", "3")),
         max_details_per_source=int(os.getenv("MAX_DETAILS_PER_SOURCE", "15")),
-        domovita_max_search_pages=int(
-            os.getenv("DOMOVITA_MAX_SEARCH_PAGES", "2")
-        ),
+        domovita_max_search_pages=int(os.getenv("DOMOVITA_MAX_SEARCH_PAGES", "2")),
         kufar_max_search_pages=int(os.getenv("KUFAR_MAX_SEARCH_PAGES", "3")),
-        kufar_detail_delay_seconds=float(
-            os.getenv("KUFAR_DETAIL_DELAY_SECONDS", "6")
-        ),
+        kufar_detail_delay_seconds=float(os.getenv("KUFAR_DETAIL_DELAY_SECONDS", "6")),
         kufar_detail_batch_size=int(os.getenv("KUFAR_DETAIL_BATCH_SIZE", "8")),
-        kufar_detail_batch_pause_seconds=float(
-            os.getenv("KUFAR_DETAIL_BATCH_PAUSE_SECONDS", "45")
-        ),
-        kufar_rate_limit_pause_seconds=float(
-            os.getenv("KUFAR_RATE_LIMIT_PAUSE_SECONDS", "60")
-        ),
+        kufar_detail_batch_pause_seconds=float(os.getenv("KUFAR_DETAIL_BATCH_PAUSE_SECONDS", "45")),
+        kufar_rate_limit_pause_seconds=float(os.getenv("KUFAR_RATE_LIMIT_PAUSE_SECONDS", "60")),
         realt_search_urls=_as_urls(
             os.getenv(
                 "REALT_SEARCH_URLS",
@@ -175,8 +167,7 @@ def load_settings(env_file: Optional[str] = None) -> Settings:
         realt_auction_urls=_as_urls(
             os.getenv(
                 "REALT_AUCTION_URLS",
-                "https://realt.by/auctions/"
-                "zemelnie-ychastki-dlya-individyalnogo-stroitelstva/",
+                "https://realt.by/auctions/zemelnie-ychastki-dlya-individyalnogo-stroitelstva/",
             )
         ),
         rlt_auction_urls=_as_urls(
@@ -260,18 +251,10 @@ def load_settings(env_file: Optional[str] = None) -> Settings:
                 ),
             )
         ),
-        preferred_max_details_per_source=int(
-            os.getenv("PREFERRED_MAX_DETAILS_PER_SOURCE", "8")
-        ),
-        activity_check_batch_size=int(
-            os.getenv("ACTIVITY_CHECK_BATCH_SIZE", "40")
-        ),
-        activity_confirmation_count=int(
-            os.getenv("ACTIVITY_CONFIRMATION_COUNT", "2")
-        ),
-        activity_request_delay_seconds=float(
-            os.getenv("ACTIVITY_REQUEST_DELAY_SECONDS", "4")
-        ),
+        preferred_max_details_per_source=int(os.getenv("PREFERRED_MAX_DETAILS_PER_SOURCE", "8")),
+        activity_check_batch_size=int(os.getenv("ACTIVITY_CHECK_BATCH_SIZE", "40")),
+        activity_confirmation_count=int(os.getenv("ACTIVITY_CONFIRMATION_COUNT", "2")),
+        activity_request_delay_seconds=float(os.getenv("ACTIVITY_REQUEST_DELAY_SECONDS", "4")),
         premium_realt_search_urls=_as_urls(
             os.getenv(
                 "PREMIUM_REALT_SEARCH_URLS",
@@ -284,19 +267,12 @@ def load_settings(env_file: Optional[str] = None) -> Settings:
         premium_kufar_search_urls=_as_urls(
             os.getenv(
                 "PREMIUM_KUFAR_SEARCH_URLS",
-                "https://re.kufar.by/l/minskaya-oblast/kupit/dom"
-                "?cur=USD&prc=r:80000%2C500000",
+                "https://re.kufar.by/l/minskaya-oblast/kupit/dom?cur=USD&prc=r:80000%2C500000",
             )
         ),
-        premium_min_price_usd=float(
-            os.getenv("PREMIUM_MIN_PRICE_USD", "80000")
-        ),
-        premium_catalog_refresh_hours=int(
-            os.getenv("PREMIUM_CATALOG_REFRESH_HOURS", "12")
-        ),
-        premium_observation_ttl_days=int(
-            os.getenv("PREMIUM_OBSERVATION_TTL_DAYS", "45")
-        ),
+        premium_min_price_usd=float(os.getenv("PREMIUM_MIN_PRICE_USD", "80000")),
+        premium_catalog_refresh_hours=int(os.getenv("PREMIUM_CATALOG_REFRESH_HOURS", "12")),
+        premium_observation_ttl_days=int(os.getenv("PREMIUM_OBSERVATION_TTL_DAYS", "45")),
         location_osm_endpoints=_as_urls(
             os.getenv(
                 "LOCATION_OSM_ENDPOINTS",
@@ -305,12 +281,8 @@ def load_settings(env_file: Optional[str] = None) -> Settings:
                 "https://overpass.private.coffee/api/interpreter",
             )
         ),
-        location_osm_batch_size=int(
-            os.getenv("LOCATION_OSM_BATCH_SIZE", "12")
-        ),
-        location_osm_refresh_days=int(
-            os.getenv("LOCATION_OSM_REFRESH_DAYS", "14")
-        ),
+        location_osm_batch_size=int(os.getenv("LOCATION_OSM_BATCH_SIZE", "12")),
+        location_osm_refresh_days=int(os.getenv("LOCATION_OSM_REFRESH_DAYS", "14")),
         beltorgi_max_pages=int(os.getenv("BELTORGI_MAX_PAGES", "2")),
         profile=profile,
         google_spreadsheet_id=os.getenv("GOOGLE_SPREADSHEET_ID") or None,
@@ -320,8 +292,7 @@ def load_settings(env_file: Optional[str] = None) -> Settings:
         telegram_chat_id=os.getenv("TELEGRAM_CHAT_ID") or None,
         telegram_webhook_secret=os.getenv("TELEGRAM_WEBHOOK_SECRET") or None,
         widget_profile_id=os.getenv("WIDGET_PROFILE_ID") or None,
-        widget_allowed_origins=_as_urls(os.getenv("WIDGET_ALLOWED_ORIGINS", "*"))
-        or ["*"],
+        widget_allowed_origins=_as_urls(os.getenv("WIDGET_ALLOWED_ORIGINS", "*")) or ["*"],
         widget_phone_auth_mode=os.getenv("WIDGET_PHONE_AUTH_MODE", "demo").strip().lower(),
         widget_auth_secret=os.getenv("WIDGET_AUTH_SECRET", "local-demo-secret"),
         widget_sms_webhook_url=os.getenv("WIDGET_SMS_WEBHOOK_URL") or None,
@@ -330,9 +301,9 @@ def load_settings(env_file: Optional[str] = None) -> Settings:
         widget_lead_webhook_token=os.getenv("WIDGET_LEAD_WEBHOOK_TOKEN") or None,
         widget_telegram_bot_token=os.getenv("WIDGET_TELEGRAM_BOT_TOKEN") or None,
         widget_telegram_chat_id=os.getenv("WIDGET_TELEGRAM_CHAT_ID") or None,
-        web_scheduler_enabled=_as_bool(
-            os.getenv("WEB_SCHEDULER_ENABLED", "true")
-        ),
+        widget_client_bot_username=os.getenv("WIDGET_CLIENT_BOT_USERNAME") or None,
+        widget_client_bot_token=os.getenv("WIDGET_CLIENT_BOT_TOKEN") or None,
+        web_scheduler_enabled=_as_bool(os.getenv("WEB_SCHEDULER_ENABLED", "true")),
         admin_username=os.getenv("ADMIN_USERNAME", "admin").strip() or "admin",
         admin_password=os.getenv("ADMIN_PASSWORD") or None,
         admin_brand=os.getenv("ADMIN_BRAND", "landplotfinder").strip().lower(),

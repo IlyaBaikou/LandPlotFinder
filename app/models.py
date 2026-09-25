@@ -117,9 +117,7 @@ class ListingEventModel(Base):
 
 class ListingProfileModel(Base):
     __tablename__ = "listing_profiles"
-    __table_args__ = (
-        UniqueConstraint("listing_id", "profile_id", name="uq_listing_profile"),
-    )
+    __table_args__ = (UniqueConstraint("listing_id", "profile_id", name="uq_listing_profile"),)
 
     id: Mapped[int] = mapped_column(Integer, primary_key=True)
     listing_id: Mapped[int] = mapped_column(
@@ -196,23 +194,15 @@ class WidgetLeadModel(Base):
     otp_expires_at: Mapped[Optional[datetime]] = mapped_column(DateTime(timezone=True))
     otp_attempts: Mapped[int] = mapped_column(Integer, nullable=False, default=0)
     otp_request_count: Mapped[int] = mapped_column(Integer, nullable=False, default=0)
-    otp_window_started_at: Mapped[Optional[datetime]] = mapped_column(
-        DateTime(timezone=True)
-    )
+    otp_window_started_at: Mapped[Optional[datetime]] = mapped_column(DateTime(timezone=True))
     last_code_sent_at: Mapped[Optional[datetime]] = mapped_column(DateTime(timezone=True))
-    session_token_hash: Mapped[Optional[str]] = mapped_column(
-        String(64), index=True
-    )
-    session_expires_at: Mapped[Optional[datetime]] = mapped_column(
-        DateTime(timezone=True)
-    )
+    session_token_hash: Mapped[Optional[str]] = mapped_column(String(64), index=True)
+    session_expires_at: Mapped[Optional[datetime]] = mapped_column(DateTime(timezone=True))
 
 
 class WidgetInterestModel(Base):
     __tablename__ = "widget_interests"
-    __table_args__ = (
-        UniqueConstraint("lead_id", "listing_id", name="uq_widget_lead_listing"),
-    )
+    __table_args__ = (UniqueConstraint("lead_id", "listing_id", name="uq_widget_lead_listing"),)
 
     id: Mapped[int] = mapped_column(Integer, primary_key=True)
     lead_id: Mapped[int] = mapped_column(
@@ -246,6 +236,63 @@ class WidgetSearchContextModel(Base):
     )
 
 
+class WidgetTelegramInviteModel(Base):
+    __tablename__ = "widget_telegram_invites"
+
+    id: Mapped[int] = mapped_column(Integer, primary_key=True)
+    lead_id: Mapped[int] = mapped_column(
+        ForeignKey("widget_leads.id", ondelete="CASCADE"), nullable=False, index=True
+    )
+    token_hash: Mapped[str] = mapped_column(String(64), nullable=False, unique=True)
+    criteria: Mapped[Dict[str, Any]] = mapped_column(JSON, nullable=False, default=dict)
+    chat_id: Mapped[Optional[str]] = mapped_column(String(64))
+    expires_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), nullable=False)
+    consumed_at: Mapped[Optional[datetime]] = mapped_column(DateTime(timezone=True))
+    created_at: Mapped[datetime] = mapped_column(
+        DateTime(timezone=True), nullable=False, default=utcnow
+    )
+
+
+class WidgetTelegramSubscriptionModel(Base):
+    __tablename__ = "widget_telegram_subscriptions"
+
+    id: Mapped[int] = mapped_column(Integer, primary_key=True)
+    lead_id: Mapped[int] = mapped_column(
+        ForeignKey("widget_leads.id", ondelete="CASCADE"),
+        nullable=False,
+        unique=True,
+    )
+    chat_id: Mapped[str] = mapped_column(String(64), nullable=False, unique=True)
+    criteria: Mapped[Dict[str, Any]] = mapped_column(JSON, nullable=False, default=dict)
+    status: Mapped[str] = mapped_column(String(16), nullable=False, default="active")
+    consent_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), nullable=False)
+    consent_version: Mapped[str] = mapped_column(String(64), nullable=False)
+    updated_at: Mapped[datetime] = mapped_column(
+        DateTime(timezone=True), nullable=False, default=utcnow, onupdate=utcnow
+    )
+    last_digest_at: Mapped[Optional[datetime]] = mapped_column(DateTime(timezone=True))
+
+
+class WidgetTelegramDeliveryModel(Base):
+    __tablename__ = "widget_telegram_deliveries"
+    __table_args__ = (
+        UniqueConstraint("subscription_id", "listing_id", name="uq_widget_telegram_delivery"),
+    )
+
+    id: Mapped[int] = mapped_column(Integer, primary_key=True)
+    subscription_id: Mapped[int] = mapped_column(
+        ForeignKey("widget_telegram_subscriptions.id", ondelete="CASCADE"),
+        nullable=False,
+        index=True,
+    )
+    listing_id: Mapped[int] = mapped_column(
+        ForeignKey("listings.id", ondelete="CASCADE"), nullable=False
+    )
+    sent_at: Mapped[datetime] = mapped_column(
+        DateTime(timezone=True), nullable=False, default=utcnow
+    )
+
+
 class ScanRunModel(Base):
     __tablename__ = "scan_runs"
 
@@ -261,9 +308,7 @@ class ScanRunModel(Base):
 
 class SourceHealthModel(Base):
     __tablename__ = "source_health"
-    __table_args__ = (
-        UniqueConstraint("source", "profile_id", name="uq_source_health_profile"),
-    )
+    __table_args__ = (UniqueConstraint("source", "profile_id", name="uq_source_health_profile"),)
 
     id: Mapped[int] = mapped_column(Integer, primary_key=True)
     source: Mapped[str] = mapped_column(String(64), nullable=False, index=True)
@@ -329,9 +374,7 @@ class LocationObservationModel(Base):
     )
 
     id: Mapped[int] = mapped_column(Integer, primary_key=True)
-    location_key: Mapped[str] = mapped_column(
-        String(320), nullable=False, index=True
-    )
+    location_key: Mapped[str] = mapped_column(String(320), nullable=False, index=True)
     source: Mapped[str] = mapped_column(String(32), nullable=False, index=True)
     source_id: Mapped[str] = mapped_column(String(128), nullable=False)
     signal_type: Mapped[str] = mapped_column(String(64), nullable=False, index=True)
@@ -346,9 +389,7 @@ class LocationObservationModel(Base):
     last_seen_at: Mapped[datetime] = mapped_column(
         DateTime(timezone=True), nullable=False, default=utcnow
     )
-    expires_at: Mapped[datetime] = mapped_column(
-        DateTime(timezone=True), nullable=False
-    )
+    expires_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), nullable=False)
 
 
 class ServiceStateModel(Base):

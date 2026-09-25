@@ -9,6 +9,7 @@ from typing import Any, Dict, Optional, Sequence
 from apscheduler.schedulers.background import BackgroundScheduler
 
 from app.activity import ListingActivityChecker
+from app.client_telegram import send_daily_digests
 from app.config import Settings
 from app.orchestrator import Scanner
 from app.web_config import get_profile, load_web_config, runtime_settings
@@ -82,6 +83,22 @@ class JobCoordinator:
                 max_instances=1,
                 next_run_time=datetime.now(timezone.utc) + timedelta(minutes=30),
             )
+        if (
+            self.base_settings.widget_client_bot_username
+            and self.base_settings.widget_client_bot_token
+        ):
+            self.scheduler.add_job(
+                send_daily_digests,
+                "cron",
+                kwargs={"settings": self.base_settings},
+                hour=9,
+                timezone="Europe/Minsk",
+                id="widget-client-telegram-digest",
+                name="Клиентская подборка в Telegram",
+                replace_existing=True,
+                coalesce=True,
+                max_instances=1,
+            )
 
     def request_scan(
         self,
@@ -101,9 +118,7 @@ class JobCoordinator:
             {
                 "id": job.id,
                 "name": job.name,
-                "next_run_at": (
-                    job.next_run_time.isoformat() if job.next_run_time else None
-                ),
+                "next_run_at": (job.next_run_time.isoformat() if job.next_run_time else None),
             }
             for job in self.scheduler.get_jobs()
         ]
@@ -196,11 +211,7 @@ class JobCoordinator:
             return
         allowed = set(profile_sources)
         failed = sorted(
-            {
-                key.split(":", 1)[-1]
-                for key in errors
-                if key.split(":", 1)[-1] in allowed
-            }
+            {key.split(":", 1)[-1] for key in errors if key.split(":", 1)[-1] in allowed}
         )
         if not failed:
             return

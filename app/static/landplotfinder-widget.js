@@ -42,6 +42,7 @@
   let mapFocusRef = "";
   let compareRefs = new Set();
   let interestRefs = new Set();
+  let telegramAvailable = false;
   let comparisonOpen = false;
   let savedStatuses = new Map();
   let savedStatusCheckedAt = 0;
@@ -197,6 +198,7 @@
       const params = new URLSearchParams();
       if (config.profileId) params.set("profile_id", config.profileId);
       const payload = await api(`/api/public/widget/options?${params.toString()}`, { public: true });
+      telegramAvailable = Boolean(payload.telegram_subscriptions_available);
       directions = [...new Set([...(payload.directions || []), ...directions])].sort((left, right) => left.localeCompare(right, "ru"));
       const select = app.querySelector('select[name="q"]');
       if (!select) return;
@@ -204,6 +206,7 @@
       select.innerHTML = `<option value="">Все направления</option>${directionOptions()}`;
       if ([...select.options].some((option) => option.value === selected)) select.value = selected;
       restoreSearchForm();
+      if (token && app.querySelector("#lpf-tab-content")) renderWorkspace();
     } catch (_) { /* встроенный список остаётся доступен */ }
   }
 
@@ -390,9 +393,43 @@
 
   function renderResults() {
     const content = app.querySelector("#lpf-tab-content");
-    content.innerHTML = `<div class="lpf-grid">${items.map((item) => listingCard(item)).join("")}</div>${hasMore ? '<div class="lpf-more"><button id="load-more" type="button">Показать ещё</button></div>' : ""}`;
+    content.innerHTML = `<div class="lpf-grid">${items.map((item) => listingCard(item)).join("")}</div>${hasMore ? '<div class="lpf-more"><button id="load-more" type="button">Показать ещё</button></div>' : ""}${telegramPromo()}`;
     wireCards(content, items);
     content.querySelector("#load-more")?.addEventListener("click", loadMore);
+    content.querySelector("#telegram-invite")?.addEventListener("click", openTelegramModal);
+  }
+
+  function telegramPromo() {
+    if (!token || !telegramAvailable) return "";
+    return `<section class="lpf-telegram-promo"><div><strong>Новые участки — под ваш поиск</strong><span>Получайте одну личную подборку в Telegram раз в день, только если появились новые варианты. Подписку можно остановить в любой момент.</span></div><button id="telegram-invite" type="button">Получать в Telegram ↗</button></section>`;
+  }
+
+  function openTelegramModal() {
+    closeDialog();
+    const dialog = document.createElement("div");
+    dialog.id = "lpf-dialog";
+    dialog.className = "lpf-dialog-layer";
+    dialog.innerHTML = `<div class="lpf-dialog lpf-telegram-modal" role="dialog" aria-modal="true" aria-labelledby="telegram-modal-title" tabindex="-1"><button class="lpf-dialog-close" type="button" aria-label="Закрыть">×</button><div class="lpf-kicker">Личная подборка</div><h3 id="telegram-modal-title">Участки по вашим фильтрам — в Telegram</h3><p>Бот покажет актуальные варианты со ссылками на объявления. Новые совпадения можно получать одной подборкой в день. Подписка включится только после вашего подтверждения в Telegram.</p><button id="telegram-create-link" type="button">Получить приглашение</button><div id="telegram-invite-result" role="status"></div><small>Можно выбрать «Только текущие варианты» без подписки. Пауза — /pause, отписка — /stop.</small></div>`;
+    updateDialogTopOffset(dialog);
+    root.appendChild(dialog);
+    lockPageScroll();
+    dialog.querySelector(".lpf-dialog").focus({ preventScroll: true });
+    dialog.addEventListener("click", (event) => { if (event.target === dialog) closeDialog(); });
+    dialog.querySelector(".lpf-dialog-close").addEventListener("click", closeDialog);
+    dialog.querySelector("#telegram-create-link").addEventListener("click", async (event) => {
+      const button = event.currentTarget;
+      setBusy(button, true, "Готовим ссылку…");
+      const result = dialog.querySelector("#telegram-invite-result");
+      try {
+        const payload = await api("/api/public/widget/telegram/invite", { method: "POST" });
+        result.innerHTML = `<a class="lpf-telegram-open" href="${attr(payload.url)}" target="_blank" rel="noopener noreferrer">Открыть бота в Telegram ↗</a>`;
+        button.hidden = true;
+      } catch (error) {
+        result.textContent = error.message;
+        button.disabled = false;
+        button.textContent = "Повторить";
+      }
+    });
   }
 
   function listingCard(item, options = {}) {
@@ -509,8 +546,9 @@
     const compareLabel = compareRefs.size >= 2
       ? `${comparisonOpen ? "Скрыть сравнение" : `Сравнить выбранные (${compareRefs.size})`}`
       : `Выберите ещё ${2 - compareRefs.size}`;
-    content.innerHTML = `<div class="lpf-saved-intro"><div><strong>Ваш список</strong><span>Карточки хранятся только в этом браузере. Сервер получает лишь анонимные коды для проверки актуальности.</span><span class="${savedStatusError ? "lpf-saved-error" : ""}">${html(checkText)}</span></div><div class="lpf-saved-tools"><button id="refresh-saved" class="lpf-secondary" type="button" ${savedStatusPromise ? "disabled" : ""}>${savedStatusPromise ? "Проверяем…" : "Проверить"}</button><button id="clear-saved" class="lpf-text-button" type="button">Очистить список</button></div></div><div class="lpf-compare-panel"><div><strong>Сравнение вариантов</strong><span>Выбрано ${compareRefs.size} из 4. Отметьте нужные карточки ниже.</span></div><button id="show-comparison" type="button" ${compareRefs.size < 2 ? "disabled" : ""}>${html(compareLabel)}</button></div>${comparisonOpen ? comparison(saved.filter((item) => compareRefs.has(item.reference))) : ""}<div class="lpf-grid">${saved.map((item) => listingCard(item, { savedView: true })).join("")}</div>`;
+    content.innerHTML = `<div class="lpf-saved-intro"><div><strong>Ваш список</strong><span>Карточки хранятся только в этом браузере. Сервер получает лишь анонимные коды для проверки актуальности.</span><span class="${savedStatusError ? "lpf-saved-error" : ""}">${html(checkText)}</span></div><div class="lpf-saved-tools"><button id="refresh-saved" class="lpf-secondary" type="button" ${savedStatusPromise ? "disabled" : ""}>${savedStatusPromise ? "Проверяем…" : "Проверить"}</button><button id="clear-saved" class="lpf-text-button" type="button">Очистить список</button></div></div><div class="lpf-compare-panel"><div><strong>Сравнение вариантов</strong><span>Выбрано ${compareRefs.size} из 4. Отметьте нужные карточки ниже.</span></div><button id="show-comparison" type="button" ${compareRefs.size < 2 ? "disabled" : ""}>${html(compareLabel)}</button></div>${comparisonOpen ? comparison(saved.filter((item) => compareRefs.has(item.reference))) : ""}<div class="lpf-grid">${saved.map((item) => listingCard(item, { savedView: true })).join("")}</div>${telegramPromo()}`;
     wireCards(content, saved);
+    content.querySelector("#telegram-invite")?.addEventListener("click", openTelegramModal);
     content.querySelector("#refresh-saved").addEventListener("click", () => refreshSavedStatuses(true));
     content.querySelector("#show-comparison").addEventListener("click", () => {
       comparisonOpen = !comparisonOpen;
@@ -685,7 +723,8 @@
       .lpf-utils .lpf-utility-present{background:#e6f1e3;color:#275b2c}.lpf-utils .lpf-utility-absent{background:#f8e6e4;color:#952e28}.lpf-utils .lpf-utility-unknown{background:#efefed;color:#676762}.lpf-utility-table .absent{color:#952e28}
       .lpf-source-link{display:inline-flex;align-items:center;justify-content:center;min-height:36px;margin:0 0 10px;color:#6f4800;font-size:11px;font-weight:750;text-decoration:underline;text-underline-offset:3px}.lpf-source-link:hover{text-decoration:none}.lpf-source-detail{min-height:46px;margin:0;padding:11px 16px;border:1px solid #171717;border-radius:999px;color:#171717;background:#fff;text-decoration:none;text-align:center}.lpf-detail-actions{grid-template-columns:1fr 1fr 1.4fr}
       .lpf-interest{background:#fff1be;border:1px solid #d8bb64;color:#4e3b12;min-height:42px;margin:0 0 10px}.lpf-interest.active{background:#e6f1e3;border-color:#b9d4ba;color:#275b2c;opacity:1}.lpf-detail-actions .lpf-interest{margin:0}.lpf-card>.lpf-interest{width:100%}.lpf-detail-actions{grid-template-columns:repeat(2,minmax(0,1fr))}.lpf-detail-actions .lpf-source-detail,.lpf-detail-actions .lpf-interest{width:100%}
-      @media(max-width:700px){.lpf-detail-actions{grid-template-columns:1fr}}
+      .lpf-telegram-promo{margin:20px 38px 36px;padding:22px 24px;background:#1d1d1d;color:#fff;border-radius:20px;display:flex;align-items:center;justify-content:space-between;gap:20px}.lpf-telegram-promo strong,.lpf-telegram-promo span{display:block}.lpf-telegram-promo strong{font-size:17px;margin-bottom:6px}.lpf-telegram-promo span{font-size:12px;line-height:1.5;color:#c9c9c3;max-width:580px}.lpf-telegram-promo button,.lpf-telegram-open{background:var(--accent);color:#171717;border-radius:999px;min-height:44px;padding:12px 20px;white-space:nowrap;font-size:12px;font-weight:800;text-decoration:none;display:inline-flex;align-items:center;justify-content:center}.lpf-telegram-modal{max-width:520px}.lpf-telegram-modal h3{font-size:27px;line-height:1.15;margin:12px 40px 14px 0}.lpf-telegram-modal p{font-size:13px;line-height:1.55;color:#555}.lpf-telegram-modal>button:not(.lpf-dialog-close){background:var(--accent);margin:12px 0}.lpf-telegram-modal small{display:block;margin-top:18px}.lpf-telegram-modal #telegram-invite-result{font-size:12px;color:#9d322a;margin-top:10px}
+      @media(max-width:700px){.lpf-detail-actions{grid-template-columns:1fr}.lpf-telegram-promo{margin:18px 20px 28px;padding:20px;display:grid}.lpf-telegram-promo button{width:100%;white-space:normal}.lpf-telegram-modal{width:100%;min-height:100dvh;border-radius:0;padding:24px 20px}.lpf-telegram-modal h3{font-size:24px}}
       @media(min-width:981px){.lpf-header{padding:27px 32px 21px}.lpf-header h2{font-size:clamp(25px,2.7vw,34px);max-width:750px}.lpf-kicker{margin-bottom:9px}.lpf-filters{padding:20px 32px;gap:11px}.lpf-filters input,.lpf-filters select{height:46px;font-size:14px}.lpf-status{margin:17px 32px 0}.lpf-workspace{padding-top:12px}.lpf-toolbar{padding-left:32px;padding-right:32px}.lpf-grid{padding:17px 32px 28px;gap:15px}.lpf-bottom{padding:0 32px 18px}}
     `;
   }

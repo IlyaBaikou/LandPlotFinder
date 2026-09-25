@@ -112,6 +112,36 @@ def test_utility_labels_distinguish_absent_from_unknown() -> None:
     assert _utility_label(None, "sewerage") is None
 
 
+def test_widget_telegram_invite_requires_verified_search(tmp_path) -> None:
+    settings = replace(_settings(tmp_path), widget_client_bot_username="wormiefinder_bot")
+    _seed_listing(settings)
+    with TestClient(create_app(settings)) as client:
+        assert (
+            client.get("/api/public/widget/options").json()["telegram_subscriptions_available"]
+            is True
+        )
+        assert client.post("/api/public/widget/telegram/invite").status_code == 401
+        requested = client.post(
+            "/api/public/widget/auth/request-code",
+            json={"phone": "+375291234567", "consent": True},
+        ).json()
+        verified = client.post(
+            "/api/public/widget/auth/verify-code",
+            json={"phone": "+375291234567", "code": requested["demo_code"]},
+        ).json()
+        headers = {"Authorization": f"Bearer {verified['token']}"}
+        assert client.post("/api/public/widget/telegram/invite", headers=headers).status_code == 409
+        catalog = client.get(
+            "/api/public/widget/listings",
+            headers=headers,
+            params={"q": "Новосёлки", "max_price_usd": 25_000},
+        )
+        assert catalog.status_code == 200
+        invitation = client.post("/api/public/widget/telegram/invite", headers=headers)
+        assert invitation.status_code == 200
+        assert invitation.json()["url"].startswith("https://t.me/wormiefinder_bot?start=")
+
+
 def test_web_setup_and_listing_decision(tmp_path) -> None:
     settings = _settings(tmp_path)
     listing_id = _seed_listing(settings)
@@ -259,7 +289,8 @@ def test_public_widget_phone_search_and_interest(tmp_path, monkeypatch) -> None:
         assert preview.json() == {"total": 1, "preview_cards": 1}
         assert "items" not in preview.json()
         assert client.get("/api/public/widget/options").json() == {
-            "directions": ["Логойское"]
+            "directions": ["Логойское"],
+            "telegram_subscriptions_available": False,
         }
         assert (
             client.get(
@@ -420,8 +451,7 @@ def test_public_widget_phone_search_and_interest(tmp_path, monkeypatch) -> None:
         assert leads["items"][0]["search"]["max_price_usd"] == "40000.0"
         assert leads["items"][0]["search_updated_at"]
         assert (
-            leads["items"][0]["interests"][0]["search_params"]["request_type"]
-            == "listing_interest"
+            leads["items"][0]["interests"][0]["search_params"]["request_type"] == "listing_interest"
         )
         assert leads["items"][0]["interests"][0]["listing_id"] == listing_id
         assert leads["items"][0]["interests"][0]["reference"] == public_item["reference"]
@@ -484,7 +514,7 @@ def test_admin_password_does_not_block_public_widget(tmp_path) -> None:
         assert ".lpf-utils{display:flex" in widget_script.text
         assert "min-height:55px;height:auto;overflow:visible" in widget_script.text
         assert (
-            'resultsHeight: boundedNumber(script.dataset.resultsHeight, 680, 420, 1000)'
+            "resultsHeight: boundedNumber(script.dataset.resultsHeight, 680, 420, 1000)"
             in widget_script.text
         )
         assert 'mount.dataset.lpfTildaZeroBlock = "true"' in widget_script.text

@@ -9,7 +9,9 @@ from typing import Dict, List
 
 import httpx
 
+from app.client_telegram import process_client_update
 from app.config import Settings, load_settings
+from app.db import init_db, make_engine, make_session_factory, session_scope
 from app.integrations.trips import GoogleTripsSink
 
 LOGGER = logging.getLogger(__name__)
@@ -29,14 +31,27 @@ class TelegramWebhookApplication:
             raise RuntimeError("TELEGRAM_WEBHOOK_SECRET is not configured")
         self.settings = settings
         self.client = httpx.Client(timeout=settings.http_timeout_seconds)
-        self.endpoint = (
-            f"https://api.telegram.org/bot{settings.telegram_bot_token}/"
-        )
+        self.endpoint = f"https://api.telegram.org/bot{settings.telegram_bot_token}/"
 
     def close(self) -> None:
         self.client.close()
 
     def process(self, update: dict) -> None:
+        private_message = (
+            (update.get("callback_query") or {}).get("message") or update.get("message") or {}
+        )
+        if (
+            self.settings.widget_client_bot_username
+            and (private_message.get("chat") or {}).get("type") == "private"
+        ):
+            engine = make_engine(self.settings.database_url)
+            try:
+                init_db(engine)
+                with session_scope(make_session_factory(engine)) as session:
+                    process_client_update(session, self.settings.telegram_bot_token or "", update)
+            finally:
+                engine.dispose()
+            return
         callback = update.get("callback_query")
         if callback:
             self._process_callback(callback)
@@ -104,8 +119,7 @@ class TelegramWebhookApplication:
             route_urls = self._trips_sink().route_urls()
             answer = (
                 "\n".join(
-                    f"🚗 Маршрут {index}: {url}"
-                    for index, url in enumerate(route_urls, start=1)
+                    f"🚗 Маршрут {index}: {url}" for index, url in enumerate(route_urls, start=1)
                 )
                 if route_urls
                 else "Пока нет участков со статусом «Изучаем»."
@@ -114,9 +128,7 @@ class TelegramWebhookApplication:
             return
         is_add = command in {"/add", "/study"}
         reply_to_bot = bool(
-            ((message.get("reply_to_message") or {}).get("from") or {}).get(
-                "is_bot"
-            )
+            ((message.get("reply_to_message") or {}).get("from") or {}).get("is_bot")
         )
         if not is_add and not reply_to_bot:
             return
@@ -154,7 +166,7 @@ class TelegramWebhookApplication:
             )
 
     def _allowed_chat(self, message: dict) -> bool:
-        chat_id = ((message.get("chat") or {}).get("id"))
+        chat_id = (message.get("chat") or {}).get("id")
         return str(chat_id or "") == str(self.settings.telegram_chat_id or "")
 
     def _reply(self, message: dict, text: str) -> None:
@@ -233,6 +245,15 @@ class TelegramWebhookHandler(BaseHTTPRequestHandler):
             self.application.process(update)
         except Exception:
             LOGGER.exception("Telegram update failed")
+            message = (
+                (update.get("callback_query") or {}).get("message") or update.get("message") or {}
+            )
+            if (
+                self.application.settings.widget_client_bot_username
+                and (message.get("chat") or {}).get("type") == "private"
+            ):
+                self._respond(503, {"ok": False})
+                return
             try:
                 self.application.report_error(update)
             except Exception:

@@ -42,6 +42,7 @@ from app.backups import (
     database_stats,
     restore_backup,
 )
+from app.client_telegram import create_invite
 from app.config import Settings, load_settings
 from app.db import init_db, make_engine, make_session_factory, session_scope
 from app.integrations.trips import (
@@ -64,6 +65,7 @@ from app.models import (
     WidgetInterestModel,
     WidgetLeadModel,
     WidgetSearchContextModel,
+    WidgetTelegramSubscriptionModel,
 )
 from app.source_health import health_payloads
 from app.web_config import (
@@ -121,9 +123,7 @@ class SearchProfilePayload(BaseModel):
     enabled: bool = True
     schedule_enabled: bool = True
     schedule_interval_hours: int = Field(default=6, ge=1, le=168)
-    sources: List[str] = Field(
-        default_factory=lambda: ["realt", "kufar", "domovita"]
-    )
+    sources: List[str] = Field(default_factory=lambda: ["realt", "kufar", "domovita"])
     target_price_usd: float = Field(default=20_000, ge=0)
     max_price_usd: float = Field(default=40_000, gt=0)
     min_area_sotok: float = Field(default=9, gt=0)
@@ -510,9 +510,36 @@ def create_app(settings: Optional[Settings] = None) -> FastAPI:
             key=str.casefold,
         )
         return JSONResponse(
-            {"directions": cleaned},
+            {
+                "directions": cleaned,
+                "telegram_subscriptions_available": bool(base_settings.widget_client_bot_username),
+            },
             headers={"Cache-Control": "public, max-age=300"},
         )
+
+    @app.post("/api/public/widget/telegram/invite")
+    def widget_telegram_invite(request: Request) -> Dict[str, str]:
+        if not base_settings.widget_client_bot_username:
+            raise HTTPException(status_code=503, detail="Подписка в Telegram пока недоступна")
+        try:
+            with _database(base_settings) as session:
+                lead = verified_lead(session, _bearer_token(request))
+                context = session.scalar(
+                    select(WidgetSearchContextModel).where(
+                        WidgetSearchContextModel.lead_id == lead.id
+                    )
+                )
+                if context is None or not context.criteria:
+                    raise WidgetError("Сначала выполните поиск участков", 409)
+                url = create_invite(
+                    session,
+                    lead.id,
+                    context.criteria,
+                    base_settings.widget_client_bot_username,
+                )
+        except WidgetError as exc:
+            raise HTTPException(status_code=exc.status_code, detail=exc.detail) from exc
+        return {"url": url}
 
     @app.post("/api/public/widget/statuses")
     def widget_statuses(
@@ -538,9 +565,7 @@ def create_app(settings: Optional[Settings] = None) -> FastAPI:
                     "reference": reference,
                     "active": bool(listings.get(reference) and listings[reference].active),
                     "last_seen_at": (
-                        _iso(listings[reference].last_seen_at)
-                        if listings.get(reference)
-                        else None
+                        _iso(listings[reference].last_seen_at) if listings.get(reference) else None
                     ),
                 }
                 for reference in references
@@ -592,7 +617,9 @@ def create_app(settings: Optional[Settings] = None) -> FastAPI:
                 select(WidgetInterestModel).order_by(WidgetInterestModel.created_at.desc())
             ).all()
             contexts = session.scalars(select(WidgetSearchContextModel)).all()
+            subscriptions = session.scalars(select(WidgetTelegramSubscriptionModel)).all()
         contexts_by_lead = {item.lead_id: item for item in contexts}
+        subscriptions_by_lead = {item.lead_id: item for item in subscriptions}
         grouped: Dict[int, List[WidgetInterestModel]] = {}
         for interest in interests:
             grouped.setdefault(interest.lead_id, []).append(interest)
@@ -604,14 +631,17 @@ def create_app(settings: Optional[Settings] = None) -> FastAPI:
                 {
                     "id": lead.id,
                     "phone": lead.phone,
+                    "telegram_status": (
+                        subscriptions_by_lead[lead.id].status
+                        if lead.id in subscriptions_by_lead
+                        else None
+                    ),
                     "verified_at": _iso(lead.verified_at),
                     "created_at": _iso(lead.created_at),
                     "source_page": lead.source_page,
                     "utm": lead.utm,
                     "search": (
-                        contexts_by_lead[lead.id].criteria
-                        if lead.id in contexts_by_lead
-                        else {}
+                        contexts_by_lead[lead.id].criteria if lead.id in contexts_by_lead else {}
                     ),
                     "search_updated_at": (
                         _iso(contexts_by_lead[lead.id].updated_at)
@@ -1327,8 +1357,8 @@ def create_app(settings: Optional[Settings] = None) -> FastAPI:
                 1,
             )
             html = html.replace(
-                '<span><strong>LandPlot</strong><small>Finder</small></span>',
-                '<span><strong>ЛИДЕР СТРОЙ</strong><small>Подбор участков</small></span>',
+                "<span><strong>LandPlot</strong><small>Finder</small></span>",
+                "<span><strong>ЛИДЕР СТРОЙ</strong><small>Подбор участков</small></span>",
                 1,
             )
             html = html.replace(
@@ -1518,9 +1548,7 @@ def _listing_from_public_ref(
     normalized = str(reference or "").strip().upper()
     if not normalized.startswith("LP-"):
         raise WidgetError("Вариант не найден", 404)
-    listings = session.scalars(
-        select(ListingModel).where(ListingModel.active.is_(True))
-    ).all()
+    listings = session.scalars(select(ListingModel).where(ListingModel.active.is_(True))).all()
     for listing in listings:
         expected = _public_listing_ref(secret, listing.id)
         if secrets.compare_digest(expected, normalized):
@@ -1942,7 +1970,8 @@ def _viewer_leads(value: Dict[str, Any]) -> Dict[str, Any]:
         lead["search"] = {
             key: item
             for key, item in (lead.get("search") or {}).items()
-            if key in {
+            if key
+            in {
                 "max_price_usd",
                 "min_area_sotok",
                 "max_area_sotok",
@@ -2017,9 +2046,7 @@ def _viewer_history(value: Dict[str, Any]) -> Dict[str, Any]:
         payload = event.get("payload") or {}
         if event.get("type") == "decision":
             event["payload"] = {
-                key: payload[key]
-                for key in ("from", "to", "note_changed")
-                if key in payload
+                key: payload[key] for key in ("from", "to", "note_changed") if key in payload
             }
         elif event.get("type") == "updated":
             event["payload"] = {
@@ -2092,9 +2119,7 @@ def _session_role(value: Optional[str], settings: Settings) -> Optional[str]:
         )
         if role not in AUTH_ROLES or int(expires_at) <= int(time.time()):
             return None
-        expected_username = (
-            settings.admin_username if role == "admin" else settings.viewer_username
-        )
+        expected_username = settings.admin_username if role == "admin" else settings.viewer_username
         password = settings.admin_password if role == "admin" else settings.viewer_password
         return role if password and secrets.compare_digest(username, expected_username) else None
     except (ValueError, UnicodeDecodeError, BinasciiError):
