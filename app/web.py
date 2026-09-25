@@ -1508,8 +1508,8 @@ def create_app(settings: Optional[Settings] = None) -> FastAPI:
             )
             html = html.replace('content="#31473a"', 'content="#201f1e"', 1)
             html = html.replace(
-                '<link rel="stylesheet" href="/static/v11.css?v=20260925-widget-settings">',
-                '<link rel="stylesheet" href="/static/v11.css?v=20260925-widget-settings">\n'
+                '<link rel="stylesheet" href="/static/v11.css?v=20260925-lead-filters">',
+                '<link rel="stylesheet" href="/static/v11.css?v=20260925-lead-filters">\n'
                 '  <link rel="stylesheet" href="/static/admin-brand.css?v=20260925-lider">',
                 1,
             )

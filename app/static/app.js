@@ -266,23 +266,71 @@ async function loadWidgetAdmin() {
     const since = Date.now() - 7 * 24 * 60 * 60 * 1000;
     const recent = (state.widgetAdmin.items || []).filter((lead) => new Date(lead.created_at).getTime() >= since).length;
     $('#widgetRecentCount').textContent = number(recent, '0');
+    populateWidgetDirections();
     renderWidgetClients();
   } catch (error) {
     $('#widgetRequestList').innerHTML = `<div class="empty">${esc(error.message)}</div>`;
   }
 }
+function populateWidgetDirections() {
+  const select = $('#widgetDirectionFilter');
+  const selected = select.value;
+  const directions = [...new Set((state.widgetAdmin?.items || [])
+    .map((lead) => String(lead.search?.q || '').trim()).filter(Boolean))]
+    .sort((left, right) => left.localeCompare(right, 'ru'));
+  select.innerHTML = '<option value="all">Все направления</option>'
+    + directions.map((value) => `<option value="${esc(value)}">${esc(presentationMode ? 'Выбранное направление' : value)}</option>`).join('');
+  select.value = directions.includes(selected) ? selected : 'all';
+}
+function widgetActivityTime(lead) {
+  return Math.max(0, ...[lead.created_at, lead.verified_at, lead.search_updated_at,
+    ...(lead.interests || []).map((item) => item.created_at)]
+    .map((value) => value ? new Date(value).getTime() || 0 : 0));
+}
 function renderWidgetClients() {
   const query = ($('#widgetSearchInput')?.value || '').trim().toLowerCase();
   const filter = $('#widgetLeadFilter')?.value || 'all';
-  const since = Date.now() - 7 * 24 * 60 * 60 * 1000;
+  const period = $('#widgetPeriodFilter')?.value || 'all';
+  const direction = $('#widgetDirectionFilter')?.value || 'all';
+  const telegram = $('#widgetTelegramFilter')?.value || 'all';
+  const sort = $('#widgetSort')?.value || 'activity_desc';
+  const group = $('#widgetGroup')?.value || 'none';
+  const since = period === 'all' ? 0 : Date.now() - Number(period) * 24 * 60 * 60 * 1000;
   const leads = (state.widgetAdmin?.items || []).filter((lead) => {
     if (filter === 'interested' && !(lead.interests || []).length) return false;
-    if (filter === 'recent' && new Date(lead.created_at).getTime() < since) return false;
+    if (filter === 'without' && (lead.interests || []).length) return false;
+    if (since && widgetActivityTime(lead) < since) return false;
+    if (direction !== 'all' && String(lead.search?.q || '').trim() !== direction) return false;
+    if (telegram !== 'all' && (lead.telegram_status || 'none') !== telegram) return false;
     const text = [lead.phone, JSON.stringify(lead.search || {}), ...(lead.interests || []).flatMap((item) => [item.reference, item.title])].join(' ').toLowerCase();
     return !query || text.includes(query);
   });
-  $('#widgetRequestList').innerHTML = leads.length ? leads.map(widgetClientCard).join('')
-    : '<div class="empty">По этому фильтру клиентов нет.</div>';
+  leads.sort((left, right) => {
+    if (sort === 'interests_desc') return (right.interests?.length || 0) - (left.interests?.length || 0) || widgetActivityTime(right) - widgetActivityTime(left);
+    if (sort === 'verified_desc') return new Date(right.verified_at).getTime() - new Date(left.verified_at).getTime();
+    return sort === 'activity_asc' ? widgetActivityTime(left) - widgetActivityTime(right) : widgetActivityTime(right) - widgetActivityTime(left);
+  });
+  const hasFilters = Boolean(query || filter !== 'all' || period !== 'all' || direction !== 'all' || telegram !== 'all' || sort !== 'activity_desc' || group !== 'none');
+  $('#widgetFilterSummary').textContent = `Показано ${leads.length} из ${state.widgetAdmin?.total || 0} клиентов`;
+  $('#widgetResetFilters').hidden = !hasFilters;
+  if (!leads.length) {
+    $('#widgetRequestList').innerHTML = '<div class="empty">По этим фильтрам клиентов нет.</div>';
+    return;
+  }
+  if (group === 'none') {
+    $('#widgetRequestList').innerHTML = leads.map(widgetClientCard).join('');
+    return;
+  }
+  const grouped = new Map();
+  leads.forEach((lead) => {
+    const name = group === 'interest'
+      ? ((lead.interests || []).length ? 'Отметили участок' : 'Без отметок')
+      : (presentationMode ? 'Выбранное направление' : String(lead.search?.q || '').trim() || 'Направление не указано');
+    if (!grouped.has(name)) grouped.set(name, []);
+    grouped.get(name).push(lead);
+  });
+  $('#widgetRequestList').innerHTML = [...grouped.entries()].map(([name, items]) =>
+    `<section class="widget-client-group"><h3>${esc(name)} <span>${items.length}</span></h3>${items.map(widgetClientCard).join('')}</section>`).join('');
 }
 function widgetClientCard(lead) {
   const interests = lead.interests || [];
@@ -394,7 +442,8 @@ $('#scanButton').onclick = () => runJob('scan');
 $('#activityButton').onclick = () => runJob('activity'); $('#refreshHealthButton').onclick = loadHealth; $('#buildTripButton').onclick = buildTrip;
 $('#refreshWidgetButton').onclick = loadWidgetAdmin;
 $('#widgetSearchInput').oninput = renderWidgetClients;
-$('#widgetLeadFilter').onchange = renderWidgetClients;
+['widgetLeadFilter', 'widgetPeriodFilter', 'widgetDirectionFilter', 'widgetTelegramFilter', 'widgetSort', 'widgetGroup'].forEach((id) => { $(`#${id}`).onchange = renderWidgetClients; });
+$('#widgetResetFilters').onclick = () => { $('#widgetSearchInput').value = ''; ['widgetLeadFilter', 'widgetPeriodFilter', 'widgetDirectionFilter', 'widgetTelegramFilter', 'widgetSort', 'widgetGroup'].forEach((id) => { $(`#${id}`).selectedIndex = 0; }); renderWidgetClients(); };
 $('#newProfileButton').onclick = createProfile; $('#deleteProfileButton').onclick = deleteProfile; $('#profileSelect').onchange = (event) => switchProfile(event.target.value);
 $('#drawerClose').onclick = closeDetail; $('#drawerShade').onclick = closeDetail;
 document.addEventListener('keydown', (event) => { if (event.key === 'Escape' && $('#detailDrawer').classList.contains('open')) closeDetail(); else if (event.key === 'Escape') closeMobileMenu(); });

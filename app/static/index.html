@@ -9,7 +9,7 @@
   <link rel="preconnect" href="https://unpkg.com">
   <link rel="stylesheet" href="https://unpkg.com/leaflet@1.9.4/dist/leaflet.css">
   <link rel="stylesheet" href="/static/styles.css">
-  <link rel="stylesheet" href="/static/v11.css?v=20260925-widget-settings">
+  <link rel="stylesheet" href="/static/v11.css?v=20260925-lead-filters">
 </head>
 <body>
   <div class="app-shell">
@@ -114,7 +114,16 @@
           <article class="stat-card accent"><span>Интерес к участкам</span><strong id="widgetRequestCount">—</strong><small>явно отмеченных вариантов</small></article>
           <article class="stat-card muted"><span>За последние 7 дней</span><strong id="widgetRecentCount">—</strong><small>новых контактов</small></article>
         </div>
-        <div class="widget-toolbar"><label class="search-field widget-search"><span>⌕</span><input id="widgetSearchInput" type="search" placeholder="Телефон, место или код участка" aria-label="Поиск клиентов"></label><select id="widgetLeadFilter" aria-label="Фильтр клиентов"><option value="all">Все клиенты</option><option value="interested">Отметили участок</option><option value="recent">За 7 дней</option></select><a class="button ghost" href="/widget-demo" target="_blank" rel="noopener">Открыть квиз ↗</a></div>
+        <div class="widget-toolbar"><label class="search-field widget-search"><span>⌕</span><input id="widgetSearchInput" type="search" placeholder="Телефон, место или код участка" aria-label="Поиск клиентов"></label><a class="button ghost" href="/widget-demo" target="_blank" rel="noopener">Открыть квиз ↗</a></div>
+        <div class="widget-filter-grid" aria-label="Фильтры и сортировка клиентов">
+          <label><span>Интерес к участкам</span><select id="widgetLeadFilter"><option value="all">Все клиенты</option><option value="interested">С отметками</option><option value="without">Без отметок</option></select></label>
+          <label><span>Активность</span><select id="widgetPeriodFilter"><option value="all">За всё время</option><option value="7">За 7 дней</option><option value="30">За 30 дней</option><option value="90">За 90 дней</option></select></label>
+          <label><span>Направление</span><select id="widgetDirectionFilter"><option value="all">Все направления</option></select></label>
+          <label><span>Telegram</span><select id="widgetTelegramFilter"><option value="all">Любой статус</option><option value="active">Подписан</option><option value="paused">Пауза</option><option value="stopped">Отписался</option><option value="none">Без подписки</option></select></label>
+          <label><span>Сортировка</span><select id="widgetSort"><option value="activity_desc">Недавно активные</option><option value="activity_asc">Давно неактивные</option><option value="interests_desc">Больше отметок</option><option value="verified_desc">Новые контакты</option></select></label>
+          <label><span>Группировка</span><select id="widgetGroup"><option value="none">Без группировки</option><option value="interest">По интересу</option><option value="direction">По направлению</option></select></label>
+        </div>
+        <div class="widget-filter-summary"><span id="widgetFilterSummary">Загружаем клиентов…</span><button class="button ghost" id="widgetResetFilters" type="button" hidden>Сбросить фильтры</button></div>
         <div class="widget-request-list" id="widgetRequestList"><div class="empty">Загружаем клиентов…</div></div>
         <p class="widget-privacy-note">Сохранённое в браузере избранное здесь не отображается. В демо-режиме код не подтверждает владение номером.</p>
       </section>
@@ -221,6 +230,6 @@
   <div class="toast" id="toast" role="status"></div>
 
   <script src="https://unpkg.com/leaflet@1.9.4/dist/leaflet.js"></script>
-  <script src="/static/app.js?v=20260925-widget-settings"></script>
+  <script src="/static/app.js?v=20260925-lead-filters"></script>
 </body>
 </html>
