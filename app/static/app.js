@@ -193,12 +193,15 @@ function fillSettings() {
   Object.entries(values).forEach(([key, value]) => { const elements = [...form.querySelectorAll(`[name="${key}"]`)]; if (!elements.length) return;
     if (key === 'sources') elements.forEach((element) => { element.checked = value.includes(element.value); });
     else if (elements[0].type === 'checkbox') elements[0].checked = Boolean(value); else elements[0].value = value ?? ''; });
+  $('#widgetBotStatus').textContent = state.settings.widget_bot_configured
+    ? 'Бот подключён. Он отправит сообщение после отметки участка клиентом.'
+    : 'Бот ещё не подключён: добавьте WIDGET_TELEGRAM_BOT_TOKEN в Railway.';
 }
 function formObject(form) {
   const formData = new FormData(form); const result = {};
   for (const [key, value] of formData) { if (key === 'sources') (result.sources ??= []).push(value); else result[key] = value; }
-  ['enabled', 'schedule_enabled', 'activity_check_enabled', 'telegram_enabled'].forEach((key) => { result[key] = form.querySelector(`[name="${key}"]`)?.checked || false; });
-  ['target_price_usd', 'max_price_usd', 'min_area_sotok', 'max_area_sotok', 'max_distance_km', 'primary_electricity_kw', 'secondary_electricity_kw', 'schedule_interval_hours'].forEach((key) => { if (key in result) result[key] = Number(result[key]); });
+  ['enabled', 'schedule_enabled', 'activity_check_enabled', 'widget_notifications_enabled'].forEach((key) => { result[key] = form.querySelector(`[name="${key}"]`)?.checked || false; });
+  ['target_price_usd', 'max_price_usd', 'min_area_sotok', 'max_area_sotok', 'max_distance_km', 'primary_electricity_kw', 'secondary_electricity_kw', 'schedule_interval_hours', 'widget_default_max_price_usd', 'widget_default_min_area_sotok', 'widget_default_max_area_sotok', 'widget_default_max_distance_km', 'widget_cards_per_page', 'widget_cards_per_day'].forEach((key) => { if (key in result) result[key] = Number(result[key]); });
   result.sources ||= []; return result;
 }
 function profilePayload(data) {
@@ -212,10 +215,20 @@ function profilePayload(data) {
 async function saveSettings(form) {
   try {
     const data = formObject(form); const profile = profilePayload(data);
+    if (data.widget_default_min_area_sotok > data.widget_default_max_area_sotok) throw new Error('У виджета минимальная площадь больше максимальной');
+    if (data.widget_cards_per_page > data.widget_cards_per_day) throw new Error('Дневной лимит карточек меньше размера страницы');
+    const chatIds = data.widget_notification_chat_ids.split(/[,;\n]+/).map((value) => value.trim()).filter(Boolean);
+    if (chatIds.length > 5 || chatIds.some((value) => !/^-?\d{5,20}$/.test(value))) throw new Error('Укажите до пяти числовых Chat ID');
     await api(`/api/profiles/${encodeURIComponent(state.profileId)}`, { method: 'PUT', body: JSON.stringify(profile) });
     state.settings = await api('/api/settings', { method: 'PUT', body: JSON.stringify({ ...profile,
-      activity_check_enabled: data.activity_check_enabled, telegram_enabled: data.telegram_enabled,
-      telegram_bot_token: data.telegram_bot_token, telegram_chat_id: data.telegram_chat_id,
+      activity_check_enabled: data.activity_check_enabled,
+      widget_default_max_price_usd: data.widget_default_max_price_usd,
+      widget_default_min_area_sotok: data.widget_default_min_area_sotok,
+      widget_default_max_area_sotok: data.widget_default_max_area_sotok,
+      widget_default_max_distance_km: data.widget_default_max_distance_km,
+      widget_cards_per_page: data.widget_cards_per_page, widget_cards_per_day: data.widget_cards_per_day,
+      widget_notifications_enabled: data.widget_notifications_enabled,
+      widget_notification_chat_ids: data.widget_notification_chat_ids,
       map_provider: data.map_provider }) });
     $('#mapProviderHint').textContent = `Использовать: ${mapProviderNames[state.settings.map_provider] || 'Google Maps'}`;
     await loadProfiles(); fillSettings(); $('#setupModal').classList.add('hidden'); toast('Настройки сохранены'); loadSummary();
@@ -349,7 +362,7 @@ function applyViewerMode() {
   document.body.classList.add('viewer-mode'); $('#viewerBadge').hidden = false;
   $('#serviceText').textContent = 'Демонстрационный доступ';
   $('#setupModal').classList.add('hidden');
-  $$('#settingsForm input, #settingsForm select, #settingsForm button').forEach((element) => { element.disabled = true; });
+  $$('#settingsForm input, #settingsForm select, #settingsForm textarea, #settingsForm button').forEach((element) => { element.disabled = true; });
 }
 
 async function logout() {

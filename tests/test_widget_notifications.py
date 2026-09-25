@@ -66,3 +66,28 @@ def test_widget_telegram_error_does_not_log_token(monkeypatch, caplog) -> None:
     notify_lead(settings, {"event": "listing_interest_marked", "phone": "+375291234567"})
     assert "Widget Telegram notification failed" in caplog.text
     assert "test-secret-token" not in caplog.text
+
+
+def test_widget_telegram_can_notify_multiple_managers(monkeypatch) -> None:
+    settings = replace(
+        load_settings(),
+        widget_telegram_bot_token="test-token",
+        widget_telegram_chat_id="11111",
+        widget_lead_webhook_url=None,
+    )
+    recipients = []
+
+    class SuccessfulResponse:
+        def raise_for_status(self) -> None:
+            pass
+
+    def fake_post(url, **kwargs):
+        recipients.append(kwargs["json"]["chat_id"])
+        return SuccessfulResponse()
+
+    monkeypatch.setattr("app.widget_service.httpx.post", fake_post)
+    payload = {"event": "listing_interest_marked", "phone": "+375291234567"}
+    notify_lead(settings, payload, chat_ids=["11111", "22222", "22222"])
+    assert recipients == ["11111", "22222"]
+    notify_lead(settings, payload, chat_ids=["11111"], notifications_enabled=False)
+    assert recipients == ["11111", "22222"]

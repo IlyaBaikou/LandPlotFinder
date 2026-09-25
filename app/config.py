@@ -94,7 +94,6 @@ class Settings:
     widget_client_bot_username: Optional[str] = None
     widget_client_bot_token: Optional[str] = None
     widget_codes_per_day: int = 50
-    widget_catalog_cards_per_day: int = 120
     web_scheduler_enabled: bool = True
     admin_username: str = "admin"
     admin_password: Optional[str] = None
@@ -310,9 +309,6 @@ def load_settings(env_file: Optional[str] = None) -> Settings:
         widget_client_bot_username=os.getenv("WIDGET_CLIENT_BOT_USERNAME") or None,
         widget_client_bot_token=os.getenv("WIDGET_CLIENT_BOT_TOKEN") or None,
         widget_codes_per_day=max(1, int(os.getenv("WIDGET_CODES_PER_DAY", "50"))),
-        widget_catalog_cards_per_day=max(
-            9, int(os.getenv("WIDGET_CATALOG_CARDS_PER_DAY", "120"))
-        ),
         web_scheduler_enabled=_as_bool(os.getenv("WEB_SCHEDULER_ENABLED", "true")),
         admin_username=os.getenv("ADMIN_USERNAME", "admin").strip() or "admin",
         admin_password=os.getenv("ADMIN_PASSWORD") or None,

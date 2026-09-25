@@ -173,6 +173,149 @@ def test_widget_wrong_code_attempts_are_persisted(tmp_path) -> None:
     assert [response.status_code for response in responses] == [401] * 5 + [429]
 
 
+def test_widget_only_accepts_issued_code_once(tmp_path) -> None:
+    settings = _settings(tmp_path)
+    with TestClient(create_app(settings)) as client:
+        requested = client.post(
+            "/api/public/widget/auth/request-code",
+            json={"phone": "+375291234567", "consent": True},
+        ).json()
+        code = requested["demo_code"]
+        wrong_code = "000000" if code != "000000" else "111111"
+        assert client.post(
+            "/api/public/widget/auth/verify-code",
+            json={"phone": "+375291234567", "code": wrong_code},
+        ).status_code == 401
+        assert client.post(
+            "/api/public/widget/auth/verify-code",
+            json={"phone": "+375291234567", "code": f"{code[:2]}-{code[2:]}"},
+        ).status_code == 422
+        assert client.post(
+            "/api/public/widget/auth/verify-code",
+            json={"phone": "+375291234568", "code": code},
+        ).status_code == 409
+        assert client.post(
+            "/api/public/widget/auth/verify-code",
+            json={"phone": "+375291234567", "code": code},
+        ).status_code == 200
+        assert client.post(
+            "/api/public/widget/auth/verify-code",
+            json={"phone": "+375291234567", "code": code},
+        ).status_code == 409
+
+
+def test_widget_settings_control_defaults_page_size_and_sources(tmp_path) -> None:
+    settings = _settings(tmp_path)
+    _seed_listing(settings)
+    engine = make_engine(settings.database_url)
+    factory = make_session_factory(engine)
+    with session_scope(factory) as session:
+        session.add(
+            ListingModel(
+                source="beltorgi_auction",
+                source_id="old-auction",
+                canonical_url="https://t.me/beltorgi_uchastok/1",
+                title="Старый аукцион",
+                direction="Логойское",
+                price_usd=18_000,
+                area_sotok=10,
+                distance_mkad_km=20,
+                status="MATCH",
+                score=80,
+                content_hash="old-auction",
+            )
+        )
+    engine.dispose()
+    save_web_config(
+        settings.database_url,
+        {
+            "sources": ["kufar"],
+            "widget_default_max_price_usd": 65_000,
+            "widget_cards_per_page": 3,
+            "widget_cards_per_day": 9,
+        },
+    )
+    with TestClient(create_app(settings)) as client:
+        options = client.get("/api/public/widget/options").json()
+        assert options["defaults"]["max_price_usd"] == 65_000
+        assert options["cards_per_page"] == 3
+        assert client.get("/api/public/widget/preview").json()["total"] == 1
+        requested = client.post(
+            "/api/public/widget/auth/request-code",
+            json={"phone": "+375291234567", "consent": True},
+        ).json()
+        verified = client.post(
+            "/api/public/widget/auth/verify-code",
+            json={"phone": "+375291234567", "code": requested["demo_code"]},
+        ).json()
+        response = client.get(
+            "/api/public/widget/listings",
+            params={"limit": 24},
+            headers={"Authorization": f"Bearer {verified['token']}"},
+        )
+        assert response.status_code == 200
+        assert response.json()["total"] == 1
+        assert response.json()["limit"] == 3
+        reference = response.json()["items"][0]["reference"]
+        save_web_config(settings.database_url, {"sources": ["realt"]})
+        assert client.get("/api/public/widget/preview").json()["total"] == 0
+        status = client.post(
+            "/api/public/widget/statuses",
+            headers={"Authorization": f"Bearer {verified['token']}"},
+            json={"references": [reference]},
+        )
+        assert status.json()["items"][0]["active"] is False
+        assert client.post(
+            "/api/public/widget/interests",
+            headers={"Authorization": f"Bearer {verified['token']}"},
+            json={"reference": reference},
+        ).status_code == 404
+
+
+def test_admin_can_update_widget_and_manager_settings(tmp_path) -> None:
+    settings = _settings(tmp_path)
+    with TestClient(create_app(settings)) as client:
+        current = client.get("/api/settings").json()
+        result = client.put(
+            "/api/settings",
+            json={
+                **current,
+                "widget_default_max_price_usd": 55000,
+                "widget_default_min_area_sotok": 8,
+                "widget_default_max_area_sotok": 16,
+                "widget_default_max_distance_km": 42,
+                "widget_cards_per_page": 6,
+                "widget_cards_per_day": 30,
+                "widget_notifications_enabled": True,
+                "widget_notification_chat_ids": "123456789, -1001234567890",
+            },
+        )
+        assert result.status_code == 200
+        saved = client.get("/api/settings").json()
+        assert saved["widget_notification_chat_ids"] == "123456789, -1001234567890"
+        assert saved["widget_cards_per_day"] == 30
+        options = client.get("/api/public/widget/options").json()
+        assert options["cards_per_page"] == 6
+        assert options["defaults"] == {
+            "max_price_usd": 55000,
+            "min_area_sotok": 8,
+            "max_area_sotok": 16,
+            "max_distance_km": 42,
+        }
+        assert client.put(
+            "/api/settings",
+            json={
+                **saved,
+                "widget_default_min_area_sotok": 18,
+                "widget_default_max_area_sotok": 10,
+            },
+        ).status_code == 422
+        assert client.put(
+            "/api/settings",
+            json={**saved, "widget_notification_chat_ids": "not-a-chat-id"},
+        ).status_code == 422
+
+
 def test_widget_telegram_invites_are_limited_per_lead(tmp_path) -> None:
     settings = replace(_settings(tmp_path), widget_client_bot_username="wormiefinder_bot")
     _seed_listing(settings)
@@ -315,7 +458,7 @@ def test_public_widget_phone_search_and_interest(tmp_path, monkeypatch) -> None:
     notifications = []
     monkeypatch.setattr(
         "app.web.notify_lead",
-        lambda _settings, payload: notifications.append(payload),
+        lambda _settings, payload, **_kwargs: notifications.append(payload),
     )
 
     with TestClient(create_app(settings)) as client:
@@ -343,6 +486,13 @@ def test_public_widget_phone_search_and_interest(tmp_path, monkeypatch) -> None:
         assert client.get("/api/public/widget/options").json() == {
             "directions": ["Логойское"],
             "telegram_subscriptions_available": False,
+            "defaults": {
+                "max_price_usd": 70_000,
+                "min_area_sotok": 6,
+                "max_area_sotok": 20,
+                "max_distance_km": 50,
+            },
+            "cards_per_page": 9,
         }
         assert (
             client.get(

@@ -8,6 +8,7 @@ import io
 import logging
 import math
 import os
+import re
 import secrets
 import time
 from base64 import b64decode, urlsafe_b64decode, urlsafe_b64encode
@@ -115,9 +116,17 @@ class SettingsPayload(BaseModel):
     max_distance_km: float = Field(default=30, ge=0)
     primary_electricity_kw: float = Field(default=20, ge=0)
     secondary_electricity_kw: float = Field(default=6, ge=0)
-    telegram_enabled: bool = False
-    telegram_bot_token: str = ""
-    telegram_chat_id: str = ""
+    telegram_enabled: Optional[bool] = None
+    telegram_bot_token: Optional[str] = None
+    telegram_chat_id: Optional[str] = None
+    widget_default_max_price_usd: Optional[int] = Field(default=None, ge=1, le=10_000_000)
+    widget_default_min_area_sotok: Optional[float] = Field(default=None, gt=0, le=10_000)
+    widget_default_max_area_sotok: Optional[float] = Field(default=None, gt=0, le=10_000)
+    widget_default_max_distance_km: Optional[float] = Field(default=None, ge=0, le=1_000)
+    widget_cards_per_page: Optional[int] = Field(default=None, ge=3, le=24)
+    widget_cards_per_day: Optional[int] = Field(default=None, ge=9, le=500)
+    widget_notifications_enabled: Optional[bool] = None
+    widget_notification_chat_ids: Optional[str] = Field(default=None, max_length=256)
 
 
 class SearchProfilePayload(BaseModel):
@@ -162,6 +171,7 @@ class WidgetInterestPayload(BaseModel):
 
 class WidgetStatusPayload(BaseModel):
     references: List[str] = Field(min_length=1, max_length=50)
+    profile_id: Optional[str] = Field(default=None, max_length=64)
 
 
 class AdminLoginPayload(BaseModel):
@@ -268,17 +278,44 @@ def create_app(settings: Optional[Settings] = None) -> FastAPI:
     @app.get("/api/settings")
     def get_settings(request: Request) -> Dict[str, Any]:
         value = public_web_config(load_web_config(base_settings.database_url))
+        value["widget_bot_configured"] = bool(base_settings.widget_telegram_bot_token)
+        if not value["widget_notification_chat_ids"]:
+            value["widget_notification_chat_ids"] = base_settings.widget_telegram_chat_id or ""
         return _viewer_web_config(value) if _is_viewer(request) else value
 
     @app.put("/api/settings")
     def put_settings(payload: SettingsPayload) -> Dict[str, Any]:
         incoming = payload.model_dump(exclude_none=True)
+        if (
+            incoming.get("widget_default_min_area_sotok") is not None
+            and incoming.get("widget_default_max_area_sotok") is not None
+            and incoming["widget_default_min_area_sotok"]
+            > incoming["widget_default_max_area_sotok"]
+        ):
+            raise HTTPException(status_code=422, detail="Площадь виджета: минимум больше максимума")
+        if (
+            incoming.get("widget_cards_per_page") is not None
+            and incoming.get("widget_cards_per_day") is not None
+            and incoming["widget_cards_per_page"] > incoming["widget_cards_per_day"]
+        ):
+            raise HTTPException(status_code=422, detail="Дневной лимит меньше страницы виджета")
+        raw_chat_ids = incoming.get("widget_notification_chat_ids")
+        if raw_chat_ids:
+            chat_ids = [item.strip() for item in re.split(r"[,;\n]+", raw_chat_ids) if item.strip()]
+            if len(chat_ids) > 5 or not all(
+                re.fullmatch(r"-?\d{5,20}", item) for item in chat_ids
+            ):
+                raise HTTPException(status_code=422, detail="Укажите до пяти числовых Chat ID")
         current = load_web_config(base_settings.database_url)
         if incoming.get("telegram_bot_token") == "••••••••":
             incoming["telegram_bot_token"] = current.get("telegram_bot_token", "")
         saved = save_web_config(base_settings.database_url, incoming)
         coordinator.configure()
-        return public_web_config(saved)
+        value = public_web_config(saved)
+        value["widget_bot_configured"] = bool(base_settings.widget_telegram_bot_token)
+        if not value["widget_notification_chat_ids"]:
+            value["widget_notification_chat_ids"] = base_settings.widget_telegram_chat_id or ""
+        return value
 
     @app.post("/api/public/widget/auth/request-code")
     def widget_request_code(request: Request, payload: WidgetCodeRequest) -> Dict[str, Any]:
@@ -370,8 +407,10 @@ def create_app(settings: Optional[Settings] = None) -> FastAPI:
             config,
             profile_id or base_settings.widget_profile_id,
         )
+        profile = get_profile(config, selected_profile_id)
         statement = _widget_listing_statement(
             selected_profile_id,
+            profile["sources"],
             q,
             max_price_usd,
             min_area_sotok,
@@ -424,6 +463,7 @@ def create_app(settings: Optional[Settings] = None) -> FastAPI:
             profile_id or base_settings.widget_profile_id,
         )
         profile = get_profile(config, selected_profile_id)
+        limit = min(limit, config["widget_cards_per_page"])
         try:
             with _database(base_settings) as session:
                 lead = verified_lead(session, _bearer_token(request))
@@ -449,6 +489,7 @@ def create_app(settings: Optional[Settings] = None) -> FastAPI:
                 )
                 statement = _widget_listing_statement(
                     selected_profile_id,
+                    profile["sources"],
                     q,
                     max_price_usd,
                     min_area_sotok,
@@ -466,7 +507,7 @@ def create_app(settings: Optional[Settings] = None) -> FastAPI:
                     base_settings,
                     "catalog-lead-day",
                     str(lead.id),
-                    base_settings.widget_catalog_cards_per_day,
+                    config["widget_cards_per_day"],
                     86400,
                     cost=page_count,
                     message="Лимит просмотра участков на сегодня достигнут. Продолжите завтра.",
@@ -564,6 +605,7 @@ def create_app(settings: Optional[Settings] = None) -> FastAPI:
                 )
                 .where(
                     ListingModel.active.is_(True),
+                    ListingModel.source.in_(get_profile(config, selected_profile_id)["sources"]),
                     ListingModel.direction.is_not(None),
                     ListingModel.direction != "",
                 )
@@ -578,8 +620,15 @@ def create_app(settings: Optional[Settings] = None) -> FastAPI:
             {
                 "directions": cleaned,
                 "telegram_subscriptions_available": bool(base_settings.widget_client_bot_username),
+                "defaults": {
+                    "max_price_usd": config["widget_default_max_price_usd"],
+                    "min_area_sotok": config["widget_default_min_area_sotok"],
+                    "max_area_sotok": config["widget_default_max_area_sotok"],
+                    "max_distance_km": config["widget_default_max_distance_km"],
+                },
+                "cards_per_page": config["widget_cards_per_page"],
             },
-            headers={"Cache-Control": "public, max-age=300"},
+            headers={"Cache-Control": "no-store"},
         )
 
     @app.post("/api/public/widget/telegram/invite")
@@ -631,6 +680,12 @@ def create_app(settings: Optional[Settings] = None) -> FastAPI:
         references = list(
             dict.fromkeys(str(reference or "").strip().upper() for reference in payload.references)
         )
+        widget_config = load_web_config(base_settings.database_url)
+        selected_profile_id = _selected_profile_id(
+            widget_config,
+            payload.profile_id or base_settings.widget_profile_id,
+        )
+        enabled_sources = set(get_profile(widget_config, selected_profile_id)["sources"])
         try:
             with _database(base_settings) as session:
                 verified_lead(session, _bearer_token(request))
@@ -645,7 +700,11 @@ def create_app(settings: Optional[Settings] = None) -> FastAPI:
             "items": [
                 {
                     "reference": reference,
-                    "active": bool(listings.get(reference) and listings[reference].active),
+                    "active": bool(
+                        listings.get(reference)
+                        and listings[reference].active
+                        and listings[reference].source in enabled_sources
+                    ),
                     "last_seen_at": (
                         _iso(listings[reference].last_seen_at) if listings.get(reference) else None
                     ),
@@ -659,6 +718,12 @@ def create_app(settings: Optional[Settings] = None) -> FastAPI:
         request: Request,
         payload: WidgetInterestPayload,
     ) -> Dict[str, Any]:
+        widget_config = load_web_config(base_settings.database_url)
+        selected_profile_id = _selected_profile_id(
+            widget_config,
+            str(payload.search_params.get("profile_id") or base_settings.widget_profile_id or ""),
+        )
+        enabled_sources = set(get_profile(widget_config, selected_profile_id)["sources"])
         try:
             with _database(base_settings) as session:
                 lead = verified_lead(session, _bearer_token(request))
@@ -667,6 +732,8 @@ def create_app(settings: Optional[Settings] = None) -> FastAPI:
                     base_settings.widget_auth_secret,
                     payload.reference,
                 )
+                if listing.source not in enabled_sources:
+                    raise WidgetError("Объявление больше не показывается в подборке", 404)
                 notification = record_interest(
                     session,
                     lead,
@@ -684,7 +751,20 @@ def create_app(settings: Optional[Settings] = None) -> FastAPI:
         except WidgetError as exc:
             raise HTTPException(status_code=exc.status_code, detail=exc.detail) from exc
         if notification["created"]:
-            notify_lead(base_settings, notification)
+            widget_config = load_web_config(base_settings.database_url)
+            raw_chat_ids = widget_config["widget_notification_chat_ids"]
+            if raw_chat_ids:
+                chat_ids = raw_chat_ids.replace(" ", "").split(",")
+            elif base_settings.widget_telegram_chat_id:
+                chat_ids = [base_settings.widget_telegram_chat_id]
+            else:
+                chat_ids = []
+            notify_lead(
+                base_settings,
+                notification,
+                chat_ids=chat_ids,
+                notifications_enabled=widget_config["widget_notifications_enabled"],
+            )
         return {"ok": True, "message": "Интерес к варианту отмечен"}
 
     @app.get("/api/widget/leads")
@@ -1428,8 +1508,8 @@ def create_app(settings: Optional[Settings] = None) -> FastAPI:
             )
             html = html.replace('content="#31473a"', 'content="#201f1e"', 1)
             html = html.replace(
-                '<link rel="stylesheet" href="/static/v11.css?v=20260925-clients">',
-                '<link rel="stylesheet" href="/static/v11.css?v=20260925-clients">\n'
+                '<link rel="stylesheet" href="/static/v11.css?v=20260925-widget-settings">',
+                '<link rel="stylesheet" href="/static/v11.css?v=20260925-widget-settings">\n'
                 '  <link rel="stylesheet" href="/static/admin-brand.css?v=20260925-lider">',
                 1,
             )
@@ -1915,6 +1995,7 @@ def _validate_widget_area(
 
 def _widget_listing_statement(
     profile_id: str,
+    enabled_sources: List[str],
     q: str,
     max_price_usd: Optional[float],
     min_area_sotok: Optional[float],
@@ -1934,7 +2015,7 @@ def _widget_listing_statement(
                 ListingProfileModel.profile_id == profile_id,
             ),
         )
-        .where(ListingModel.active.is_(True))
+        .where(ListingModel.active.is_(True), ListingModel.source.in_(enabled_sources))
     )
     conditions = []
     if q.strip():
@@ -2036,6 +2117,8 @@ def _viewer_web_config(value: Dict[str, Any]) -> Dict[str, Any]:
             "telegram_bot_token": "",
             "telegram_chat_id": "",
             "telegram_configured": False,
+            "widget_bot_configured": False,
+            "widget_notification_chat_ids": "",
         }
     )
     result["profiles"] = [

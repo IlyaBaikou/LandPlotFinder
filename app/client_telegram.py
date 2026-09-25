@@ -274,7 +274,9 @@ def send_daily_digests(settings: Settings) -> int:
 
 def _matches(session: Session, criteria: Dict[str, Any], limit: int) -> List[ListingModel]:
     # Reuse the widget's exact query rather than silently broadening client filters.
+    from app.models import ServiceStateModel
     from app.web import _widget_listing_statement
+    from app.web_config import get_profile, normalize_web_config
 
     def number(name: str) -> Optional[float]:
         try:
@@ -282,8 +284,16 @@ def _matches(session: Session, criteria: Dict[str, Any], limit: int) -> List[Lis
         except (TypeError, ValueError):
             return None
 
+    state = session.get(ServiceStateModel, "web_config")
+    config = normalize_web_config(dict(state.payload or {}) if state else {})
+    profile_id = str(criteria.get("profile_id") or "default")
+    try:
+        profile = get_profile(config, profile_id)
+    except KeyError:
+        return []
     statement = _widget_listing_statement(
-        str(criteria.get("profile_id") or "default"),
+        profile_id,
+        profile["sources"],
         str(criteria.get("q") or ""),
         number("max_price_usd"),
         number("min_area_sotok"),

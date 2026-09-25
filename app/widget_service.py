@@ -5,7 +5,7 @@ import logging
 import re
 import secrets
 from datetime import datetime, timedelta, timezone
-from typing import Any, Dict, Optional
+from typing import Any, Dict, List, Optional
 
 import httpx
 from sqlalchemy import select
@@ -94,8 +94,8 @@ def verify_code(
     code_value: str,
 ) -> Dict[str, Any]:
     phone = normalize_phone(phone_value)
-    code = re.sub(r"\D", "", code_value or "")
-    if len(code) != 6:
+    code = (code_value or "").strip()
+    if not re.fullmatch(r"[0-9]{6}", code):
         raise WidgetError("Введите шестизначный код", 422)
     lead = session.scalar(select(WidgetLeadModel).where(WidgetLeadModel.phone == phone))
     if lead is None or not lead.otp_hash or not lead.otp_expires_at:
@@ -199,13 +199,24 @@ def record_interest(
     }
 
 
-def notify_lead(settings: Settings, payload: Dict[str, Any]) -> None:
+def notify_lead(
+    settings: Settings,
+    payload: Dict[str, Any],
+    chat_ids: Optional[List[str]] = None,
+    notifications_enabled: bool = True,
+) -> None:
+    recipients = (
+        chat_ids
+        if chat_ids is not None
+        else ([settings.widget_telegram_chat_id] if settings.widget_telegram_chat_id else [])
+    )
     if (
         payload.get("event") == "listing_interest_marked"
         and settings.widget_telegram_bot_token
-        and settings.widget_telegram_chat_id
+        and notifications_enabled
     ):
-        _notify_widget_telegram(settings, payload)
+        for chat_id in dict.fromkeys(recipients):
+            _notify_widget_telegram(settings, payload, chat_id)
     if not settings.widget_lead_webhook_url:
         return
     headers = {"Content-Type": "application/json"}
@@ -223,7 +234,7 @@ def notify_lead(settings: Settings, payload: Dict[str, Any]) -> None:
         LOGGER.exception("Widget lead webhook failed")
 
 
-def _notify_widget_telegram(settings: Settings, payload: Dict[str, Any]) -> None:
+def _notify_widget_telegram(settings: Settings, payload: Dict[str, Any], chat_id: str) -> None:
     search = payload.get("search_params") or {}
     criteria = []
     if search.get("q"):
@@ -249,7 +260,7 @@ def _notify_widget_telegram(settings: Settings, payload: Dict[str, Any]) -> None
         response = httpx.post(
             f"https://api.telegram.org/bot{settings.widget_telegram_bot_token}/sendMessage",
             json={
-                "chat_id": settings.widget_telegram_chat_id,
+                "chat_id": chat_id,
                 "text": "\n".join(lines),
                 "disable_web_page_preview": True,
             },

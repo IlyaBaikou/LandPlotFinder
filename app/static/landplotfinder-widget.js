@@ -17,6 +17,7 @@
     maxDistance: script.dataset.maxDistance || "50",
     defaultMapProvider: script.dataset.mapProvider || "yandex",
     resultsHeight: boundedNumber(script.dataset.resultsHeight, 680, 420, 1000),
+    cardsPerPage: 9,
   };
   const storagePrefix = `lpf-widget:${config.apiBase}`;
   const tokenKey = `${storagePrefix}:token`;
@@ -49,6 +50,7 @@
   let savedStatusPromise = null;
   let savedStatusError = "";
   let pageScrollLock = null;
+  let searchTouched = false;
   let directions = [
     "Брестское", "Витебское", "Гродненское", "Логойское", "Могилёвское",
     "Молодечненское", "Московское", "Мядельское", "Пуховичское", "Раковское", "Слуцкое",
@@ -64,9 +66,10 @@
   const app = root.getElementById("lpf-app");
   renderSearch();
   setupTildaZeroBlock();
-  loadDirections();
-  if (token) runSearch();
-  else setStatus("Задайте параметры и нажмите «Показать варианты».", "ready");
+  setStatus(token ? "Загружаем настройки виджета…" : "Задайте параметры и нажмите «Показать варианты».", "ready");
+  loadDirections().then(() => {
+    if (token && !Object.keys(lastSearch).length) runSearch();
+  });
 
   function createMount(anchor) {
     const node = document.createElement("div");
@@ -161,6 +164,8 @@
       event.preventDefault();
       runSearch();
     });
+    app.querySelector("#search-form").addEventListener("input", () => { searchTouched = true; });
+    app.querySelector("#search-form").addEventListener("change", () => { searchTouched = true; });
     app.querySelector("#logout").addEventListener("click", () => {
       clearToken();
       lastSearch = {};
@@ -199,6 +204,16 @@
       if (config.profileId) params.set("profile_id", config.profileId);
       const payload = await api(`/api/public/widget/options?${params.toString()}`, { public: true });
       telegramAvailable = Boolean(payload.telegram_subscriptions_available);
+      config.cardsPerPage = boundedNumber(payload.cards_per_page, 9, 3, 24);
+      if (!searchTouched && !Object.keys(lastSearch).length && payload.defaults) {
+        const keys = { max_price_usd: "maxPrice", min_area_sotok: "minArea", max_area_sotok: "maxArea", max_distance_km: "maxDistance" };
+        Object.entries(keys).forEach(([field, configKey]) => {
+          if (payload.defaults[field] == null) return;
+          config[configKey] = String(payload.defaults[field]);
+          const input = app.querySelector(`#search-form [name="${field}"]`);
+          if (input) input.value = config[configKey];
+        });
+      }
       directions = [...new Set([...(payload.directions || []), ...directions])].sort((left, right) => left.localeCompare(right, "ru"));
       const select = app.querySelector('select[name="q"]');
       if (!select) return;
@@ -235,7 +250,7 @@
   }
 
   async function fetchResults(params, append) {
-    params.set("limit", "9");
+    params.set("limit", String(config.cardsPerPage));
     params.set("offset", append ? String(offset) : "0");
     params.set("sort", sortMode);
     try {
@@ -604,7 +619,7 @@
     savedStatusError = "";
     savedStatusPromise = api("/api/public/widget/statuses", {
       method: "POST",
-      body: { references: saved.map((item) => item.reference) },
+      body: { references: saved.map((item) => item.reference), profile_id: config.profileId || null },
     });
     if (activeTab === "saved") renderSaved();
     try {
@@ -682,7 +697,7 @@
     if (!response.ok) { const error = new Error(payload.detail || "Не удалось выполнить запрос. Попробуйте ещё раз."); error.status = response.status; throw error; }
     return payload;
   }
-  function clearToken() { token = ""; interestRefs = new Set(); savedStatuses = new Map(); savedStatusCheckedAt = 0; localStorage.removeItem(tokenKey); sessionStorage.removeItem(tokenKey); }
+  function clearToken() { token = ""; interestRefs = new Set(); savedStatuses = new Map(); savedStatusCheckedAt = 0; localStorage.removeItem(tokenKey); sessionStorage.removeItem(tokenKey); const logout = app.querySelector("#logout"); if (logout) logout.hidden = true; }
   function setStatus(text, kind) { const node = app.querySelector("#search-status"); if (!node) return; node.className = `lpf-status ${kind || ""}`; node.textContent = text; }
   function setBusy(button, busy, label) { if (!button) return; button.disabled = busy; button.textContent = label; }
   function notice(message) { return message ? `<div class="lpf-notice">${html(message)}</div>` : ""; }

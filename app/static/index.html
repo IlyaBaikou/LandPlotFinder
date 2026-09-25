@@ -9,7 +9,7 @@
   <link rel="preconnect" href="https://unpkg.com">
   <link rel="stylesheet" href="https://unpkg.com/leaflet@1.9.4/dist/leaflet.css">
   <link rel="stylesheet" href="/static/styles.css">
-  <link rel="stylesheet" href="/static/v11.css?v=20260925-clients">
+  <link rel="stylesheet" href="/static/v11.css?v=20260925-widget-settings">
 </head>
 <body>
   <div class="app-shell">
@@ -149,6 +149,18 @@
                 <label class="check-card"><input type="checkbox" name="sources" value="e_auction"><span><b>e-auction.by</b><small>Опциональный источник</small></span></label>
               </div>
             </div>
+            <div class="form-section widget-settings-section">
+              <p class="eyebrow">Публичный квиз</p><h3>Виджет на сайте</h3>
+              <p class="settings-help">Начальные значения видит посетитель до поиска. Они не меняют границы сбора объявлений.</p>
+              <div class="form-grid">
+                <label><span>Бюджет по умолчанию, USD</span><input name="widget_default_max_price_usd" type="number" min="1" max="10000000" required></label>
+                <label><span>До МКАД по умолчанию, км</span><input name="widget_default_max_distance_km" type="number" min="0" max="1000" step="0.5" required></label>
+                <label><span>Площадь от, соток</span><input name="widget_default_min_area_sotok" type="number" min="0.1" max="10000" step="0.1" required></label>
+                <label><span>Площадь до, соток</span><input name="widget_default_max_area_sotok" type="number" min="0.1" max="10000" step="0.1" required></label>
+                <label><span>Карточек на странице</span><input name="widget_cards_per_page" type="number" min="3" max="24" required></label>
+                <label><span>Карточек клиенту за сутки</span><input name="widget_cards_per_day" type="number" min="9" max="500" required></label>
+              </div>
+            </div>
           </div>
           <aside class="settings-side">
             <div class="panel">
@@ -162,11 +174,12 @@
               <label><span>Повторять каждые, часов</span><input name="schedule_interval_hours" type="number" min="1" max="168"></label>
               <label class="toggle-row"><span><b>Проверять актуальность</b><small>Снятые объявления уйдут в архив</small></span><input type="checkbox" name="activity_check_enabled" class="toggle"></label>
             </div>
-            <div class="panel" id="telegramPanel">
-              <p class="eyebrow">Необязательно</p><h3>Telegram</h3>
-              <label class="toggle-row"><span><b>Присылать уведомления</b></span><input type="checkbox" name="telegram_enabled" class="toggle"></label>
-              <label><span>Токен бота</span><input name="telegram_bot_token" type="password" autocomplete="off"></label>
-              <label><span>ID чата</span><input name="telegram_chat_id" autocomplete="off"></label>
+            <div class="panel" id="widgetBotPanel">
+              <p class="eyebrow">Клиенты</p><h3>Уведомления в Telegram</h3>
+              <label class="toggle-row"><span><b>Сообщать об интересе к участку</b><small>Приходит только после явной отметки клиентом</small></span><input type="checkbox" name="widget_notifications_enabled" class="toggle"></label>
+              <label><span>Chat ID получателей</span><textarea name="widget_notification_chat_ids" rows="3" placeholder="286453470, 123456789"></textarea></label>
+              <small class="settings-help">До пяти ID через запятую. Каждый получатель должен сначала открыть бота и нажать Start. Команда /id доступна у бота персональных подборок; для отдельного бота уведомлений Chat ID берут из Telegram API. Токен хранится в Railway, а не в браузере.</small>
+              <small class="settings-help" id="widgetBotStatus">Проверяем подключение бота…</small>
             </div>
             <div class="panel" id="backupPanel">
               <p class="eyebrow">Ваши данные</p><h3>Резервная копия</h3>
@@ -208,6 +221,6 @@
   <div class="toast" id="toast" role="status"></div>
 
   <script src="https://unpkg.com/leaflet@1.9.4/dist/leaflet.js"></script>
-  <script src="/static/app.js?v=20260925-clientbot"></script>
+  <script src="/static/app.js?v=20260925-widget-settings"></script>
 </body>
 </html>

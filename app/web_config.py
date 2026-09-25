@@ -30,6 +30,14 @@ DEFAULT_WEB_CONFIG: Dict[str, Any] = {
     "telegram_enabled": False,
     "telegram_bot_token": "",
     "telegram_chat_id": "",
+    "widget_default_max_price_usd": 70_000,
+    "widget_default_min_area_sotok": 6,
+    "widget_default_max_area_sotok": 20,
+    "widget_default_max_distance_km": 50,
+    "widget_cards_per_page": 9,
+    "widget_cards_per_day": 120,
+    "widget_notifications_enabled": True,
+    "widget_notification_chat_ids": "",
 }
 PROFILE_FIELDS = {
     "name",
@@ -243,6 +251,35 @@ def normalize_web_config(payload: Dict[str, Any]) -> Dict[str, Any]:
             result[key] = active[key]
     result["telegram_bot_token"] = str(result.get("telegram_bot_token") or "").strip()
     result["telegram_chat_id"] = str(result.get("telegram_chat_id") or "").strip()
+    result["widget_default_max_price_usd"] = _bounded_int(
+        result.get("widget_default_max_price_usd"), 1, 10_000_000, 70_000
+    )
+    result["widget_default_min_area_sotok"] = _bounded_float(
+        result.get("widget_default_min_area_sotok"), 0.1, 10_000, 6
+    )
+    result["widget_default_max_area_sotok"] = _bounded_float(
+        result.get("widget_default_max_area_sotok"),
+        result["widget_default_min_area_sotok"],
+        10_000,
+        max(20, result["widget_default_min_area_sotok"]),
+    )
+    result["widget_default_max_distance_km"] = _bounded_float(
+        result.get("widget_default_max_distance_km"), 0, 1_000, 50
+    )
+    result["widget_cards_per_page"] = _bounded_int(
+        result.get("widget_cards_per_page"), 3, 24, 9
+    )
+    result["widget_cards_per_day"] = _bounded_int(
+        result.get("widget_cards_per_day"), 9, 500, 120
+    )
+    result["widget_notifications_enabled"] = bool(
+        result.get("widget_notifications_enabled", True)
+    )
+    result["widget_notification_chat_ids"] = ", ".join(
+        dict.fromkeys(
+            re.findall(r"-?\d{5,20}", str(result.get("widget_notification_chat_ids") or ""))
+        )
+    )
     return result
 
 
