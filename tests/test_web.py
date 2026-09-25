@@ -142,6 +142,58 @@ def test_widget_telegram_invite_requires_verified_search(tmp_path) -> None:
         assert invitation.json()["url"].startswith("https://t.me/wormiefinder_bot?start=")
 
 
+def test_widget_code_requests_have_a_shared_daily_budget(tmp_path) -> None:
+    settings = replace(_settings(tmp_path), widget_codes_per_day=2)
+    with TestClient(create_app(settings)) as client:
+        responses = [
+            client.post(
+                "/api/public/widget/auth/request-code",
+                json={"phone": f"+37529123456{digit}", "consent": True},
+            )
+            for digit in range(3)
+        ]
+    assert [response.status_code for response in responses] == [200, 200, 429]
+
+
+def test_widget_wrong_code_attempts_are_persisted(tmp_path) -> None:
+    settings = _settings(tmp_path)
+    with TestClient(create_app(settings)) as client:
+        requested = client.post(
+            "/api/public/widget/auth/request-code",
+            json={"phone": "+375291234567", "consent": True},
+        ).json()
+        wrong_code = "000000" if requested["demo_code"] != "000000" else "111111"
+        responses = [
+            client.post(
+                "/api/public/widget/auth/verify-code",
+                json={"phone": "+375291234567", "code": wrong_code},
+            )
+            for _ in range(6)
+        ]
+    assert [response.status_code for response in responses] == [401] * 5 + [429]
+
+
+def test_widget_telegram_invites_are_limited_per_lead(tmp_path) -> None:
+    settings = replace(_settings(tmp_path), widget_client_bot_username="wormiefinder_bot")
+    _seed_listing(settings)
+    with TestClient(create_app(settings)) as client:
+        requested = client.post(
+            "/api/public/widget/auth/request-code",
+            json={"phone": "+375291234567", "consent": True},
+        ).json()
+        verified = client.post(
+            "/api/public/widget/auth/verify-code",
+            json={"phone": "+375291234567", "code": requested["demo_code"]},
+        ).json()
+        headers = {"Authorization": f"Bearer {verified['token']}"}
+        assert client.get("/api/public/widget/listings", headers=headers).status_code == 200
+        statuses = [
+            client.post("/api/public/widget/telegram/invite", headers=headers).status_code
+            for _ in range(4)
+        ]
+    assert statuses == [200, 200, 200, 429]
+
+
 def test_web_setup_and_listing_decision(tmp_path) -> None:
     settings = _settings(tmp_path)
     listing_id = _seed_listing(settings)

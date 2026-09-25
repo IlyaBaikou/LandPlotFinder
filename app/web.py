@@ -76,8 +76,10 @@ from app.web_config import (
     save_search_profile,
     save_web_config,
 )
+from app.widget_limits import consume, prune_expired, visitor_ip
 from app.widget_service import (
     WidgetError,
+    normalize_phone,
     notify_lead,
     record_interest,
     request_code,
@@ -279,9 +281,25 @@ def create_app(settings: Optional[Settings] = None) -> FastAPI:
         return public_web_config(saved)
 
     @app.post("/api/public/widget/auth/request-code")
-    def widget_request_code(payload: WidgetCodeRequest) -> Dict[str, Any]:
+    def widget_request_code(request: Request, payload: WidgetCodeRequest) -> Dict[str, Any]:
         try:
+            if not payload.consent:
+                raise WidgetError("Нужно согласие на обработку контактных данных", 422)
+            normalize_phone(payload.phone)
             with _database(base_settings) as session:
+                prune_expired(session)
+                ip = visitor_ip(request)
+                consume(session, base_settings, "otp-ip-hour", ip, 10, 3600)
+                consume(session, base_settings, "otp-ip-day", ip, 30, 86400)
+                consume(
+                    session,
+                    base_settings,
+                    "otp-global-day",
+                    "all",
+                    base_settings.widget_codes_per_day,
+                    86400,
+                    message="Лимит отправки кодов на сегодня исчерпан. Попробуйте завтра.",
+                )
                 return request_code(
                     session,
                     base_settings,
@@ -294,15 +312,29 @@ def create_app(settings: Optional[Settings] = None) -> FastAPI:
             raise HTTPException(status_code=exc.status_code, detail=exc.detail) from exc
 
     @app.post("/api/public/widget/auth/verify-code")
-    def widget_verify_code(payload: WidgetCodeVerify) -> Dict[str, Any]:
+    def widget_verify_code(request: Request, payload: WidgetCodeVerify) -> Dict[str, Any]:
         try:
             with _database(base_settings) as session:
-                result = verify_code(
+                consume(
                     session,
                     base_settings,
-                    payload.phone,
-                    payload.code,
+                    "verify-ip-hour",
+                    visitor_ip(request),
+                    30,
+                    3600,
                 )
+                try:
+                    result = verify_code(
+                        session,
+                        base_settings,
+                        payload.phone,
+                        payload.code,
+                    )
+                except WidgetError as exc:
+                    if exc.status_code == 401:
+                        # Failed guesses must count even though the response is an error.
+                        session.commit()
+                    raise
                 first_verified = result.pop("first_verified")
                 lead = verified_lead(session, result["token"])
                 notification = {
@@ -320,6 +352,7 @@ def create_app(settings: Optional[Settings] = None) -> FastAPI:
 
     @app.get("/api/public/widget/preview")
     def public_widget_preview(
+        request: Request,
         q: str = Query(default="", max_length=120),
         max_price_usd: Optional[float] = Query(default=None, gt=0, le=10_000_000),
         min_area_sotok: Optional[float] = Query(default=None, gt=0, le=10_000),
@@ -350,6 +383,17 @@ def create_app(settings: Optional[Settings] = None) -> FastAPI:
             sewerage,
         )
         with _database(base_settings) as session:
+            try:
+                consume(
+                    session,
+                    base_settings,
+                    "preview-ip-hour",
+                    visitor_ip(request),
+                    120,
+                    3600,
+                )
+            except WidgetError as exc:
+                raise HTTPException(status_code=exc.status_code, detail=exc.detail) from exc
             total = session.scalar(select(func.count()).select_from(statement.subquery())) or 0
         return JSONResponse(
             {"total": total, "preview_cards": min(total, 3)},
@@ -416,6 +460,27 @@ def create_app(settings: Optional[Settings] = None) -> FastAPI:
                     sewerage,
                 )
                 rows = session.execute(statement).all()
+                page_count = min(limit, max(0, len(rows) - offset))
+                consume(
+                    session,
+                    base_settings,
+                    "catalog-lead-day",
+                    str(lead.id),
+                    base_settings.widget_catalog_cards_per_day,
+                    86400,
+                    cost=page_count,
+                    message="Лимит просмотра участков на сегодня достигнут. Продолжите завтра.",
+                )
+                consume(
+                    session,
+                    base_settings,
+                    "catalog-ip-day",
+                    visitor_ip(request),
+                    360,
+                    86400,
+                    cost=page_count,
+                    message="С этого подключения сегодня просмотрено слишком много вариантов.",
+                )
                 location_keys = {
                     str((listing.raw_payload or {}).get("location_key"))
                     for listing, _ in rows
@@ -531,6 +596,23 @@ def create_app(settings: Optional[Settings] = None) -> FastAPI:
                 )
                 if context is None or not context.criteria:
                     raise WidgetError("Сначала выполните поиск участков", 409)
+                consume(
+                    session,
+                    base_settings,
+                    "invite-lead-day",
+                    str(lead.id),
+                    3,
+                    86400,
+                    message="Сегодня уже создано три ссылки на бота. Попробуйте завтра.",
+                )
+                consume(
+                    session,
+                    base_settings,
+                    "invite-ip-day",
+                    visitor_ip(request),
+                    20,
+                    86400,
+                )
                 url = create_invite(
                     session,
                     lead.id,

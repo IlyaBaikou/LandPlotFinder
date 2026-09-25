@@ -293,6 +293,16 @@ class WidgetTelegramDeliveryModel(Base):
     )
 
 
+class WidgetRateLimitModel(Base):
+    __tablename__ = "widget_rate_limits"
+
+    bucket_key: Mapped[str] = mapped_column(String(128), primary_key=True)
+    used: Mapped[int] = mapped_column(Integer, nullable=False)
+    expires_at: Mapped[datetime] = mapped_column(
+        DateTime(timezone=True), nullable=False, index=True
+    )
+
+
 class ScanRunModel(Base):
     __tablename__ = "scan_runs"
 
