@@ -85,6 +85,8 @@ class Settings:
     widget_auth_secret: str = "local-demo-secret"
     widget_sms_webhook_url: Optional[str] = None
     widget_sms_webhook_token: Optional[str] = None
+    widget_smsby_api_key: Optional[str] = None
+    widget_smsby_alphaname_id: Optional[str] = None
     widget_lead_webhook_url: Optional[str] = None
     widget_lead_webhook_token: Optional[str] = None
     widget_telegram_bot_token: Optional[str] = None
@@ -299,6 +301,8 @@ def load_settings(env_file: Optional[str] = None) -> Settings:
         widget_auth_secret=os.getenv("WIDGET_AUTH_SECRET", "local-demo-secret"),
         widget_sms_webhook_url=os.getenv("WIDGET_SMS_WEBHOOK_URL") or None,
         widget_sms_webhook_token=os.getenv("WIDGET_SMS_WEBHOOK_TOKEN") or None,
+        widget_smsby_api_key=os.getenv("WIDGET_SMSBY_API_KEY") or None,
+        widget_smsby_alphaname_id=os.getenv("WIDGET_SMSBY_ALPHANAME_ID") or None,
         widget_lead_webhook_url=os.getenv("WIDGET_LEAD_WEBHOOK_URL") or None,
         widget_lead_webhook_token=os.getenv("WIDGET_LEAD_WEBHOOK_TOKEN") or None,
         widget_telegram_bot_token=os.getenv("WIDGET_TELEGRAM_BOT_TOKEN") or None,

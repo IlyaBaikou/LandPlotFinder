@@ -25,6 +25,7 @@ OTP_COOLDOWN_SECONDS = 60
 OTP_MAX_REQUESTS_PER_HOUR = 5
 OTP_MAX_ATTEMPTS = 5
 SESSION_TTL_DAYS = 30
+SMSBY_SEND_URL = "https://app.sms.by/api/v1/sendQuickSMS"
 
 
 class WidgetError(Exception):
@@ -293,6 +294,9 @@ def _deliver_code(settings: Settings, phone: str, code: str) -> None:
     mode = settings.widget_phone_auth_mode
     if mode == "demo":
         return
+    if mode == "smsby":
+        _deliver_smsby_code(settings, phone, code)
+        return
     if mode != "webhook" or not settings.widget_sms_webhook_url:
         raise WidgetError("Отправка SMS ещё не настроена", 503)
     headers = {"Content-Type": "application/json"}
@@ -312,6 +316,41 @@ def _deliver_code(settings: Settings, phone: str, code: str) -> None:
         response.raise_for_status()
     except Exception as exc:
         raise WidgetError("Не удалось отправить код. Попробуйте позже.", 502) from exc
+
+
+def _deliver_smsby_code(settings: Settings, phone: str, code: str) -> None:
+    # Prevent paid international traffic if somebody abuses the public widget.
+    if not re.fullmatch(r"\+375\d{9}", phone):
+        raise WidgetError("SMS-подтверждение доступно только для номеров Беларуси", 422)
+    if not settings.widget_smsby_api_key or not settings.widget_smsby_alphaname_id:
+        raise WidgetError("Отправка SMS ещё не настроена", 503)
+
+    # SMS.BY requires the API key in query parameters; httpx normally logs full URLs.
+    logging.getLogger("httpx").setLevel(logging.WARNING)
+    logging.getLogger("httpcore").setLevel(logging.WARNING)
+    try:
+        response = httpx.post(
+            SMSBY_SEND_URL,
+            params={
+                "token": settings.widget_smsby_api_key,
+                "phone": phone,
+                "message": f"ЛидерСтрой: код {code}. Никому не сообщайте его.",
+                "alphaname_id": settings.widget_smsby_alphaname_id,
+            },
+            timeout=8,
+        )
+        response.raise_for_status()
+        payload = response.json()
+        if (
+            not isinstance(payload, dict)
+            or not isinstance(payload.get("sms_id"), int)
+            or payload["sms_id"] <= 0
+            or payload.get("status") not in {"NEW", "SENT", "DELIVERED"}
+        ):
+            raise ValueError("SMS.BY did not accept the message")
+    except (httpx.HTTPError, ValueError, TypeError):
+        # Never include the provider response or request URL: it may contain the API key.
+        raise WidgetError("Не удалось отправить код. Попробуйте позже.", 502) from None
 
 
 def _secret_hash(secret: str, phone: str, code: str) -> str:
