@@ -21,7 +21,14 @@ from urllib.parse import quote
 import uvicorn
 from fastapi import FastAPI, HTTPException, Query, Request, status
 from fastapi.middleware.cors import CORSMiddleware
-from fastapi.responses import FileResponse, JSONResponse, RedirectResponse, StreamingResponse
+from fastapi.responses import (
+    FileResponse,
+    HTMLResponse,
+    JSONResponse,
+    RedirectResponse,
+    Response,
+    StreamingResponse,
+)
 from fastapi.staticfiles import StaticFiles
 from pydantic import BaseModel, Field
 from sqlalchemy import and_, func, or_, select
@@ -1270,7 +1277,18 @@ def create_app(settings: Optional[Settings] = None) -> FastAPI:
         return FileResponse(STATIC_DIR / "widget-demo.html")
 
     @app.get("/login")
-    def login_page() -> FileResponse:
+    def login_page() -> Response:
+        if base_settings.admin_brand == "liderstroy":
+            html = (STATIC_DIR / "login.html").read_text(encoding="utf-8")
+            html = html.replace("Вход · LandPlotFinder", "Вход · ЛидерСтрой", 1)
+            html = html.replace(
+                "</style>",
+                '</style>\n  <link rel="stylesheet" '
+                'href="/static/admin-login-brand.css?v=20260925-lider">',
+                1,
+            )
+            html = html.replace("Вход в LandPlotFinder", "Вход в панель ЛидерСтрой", 1)
+            return HTMLResponse(html, headers={"Cache-Control": "no-store, max-age=0"})
         return FileResponse(
             STATIC_DIR / "login.html",
             headers={"Cache-Control": "no-store, max-age=0"},
@@ -1286,9 +1304,39 @@ def create_app(settings: Optional[Settings] = None) -> FastAPI:
 
     @app.get("/")
     @app.get("/{path:path}")
-    def index(request: Request, path: str = "") -> FileResponse:
+    def index(request: Request, path: str = "") -> Response:
         if path.startswith("api/"):
             raise HTTPException(status_code=404)
+        if base_settings.admin_brand == "liderstroy":
+            html = (STATIC_DIR / "index.html").read_text(encoding="utf-8")
+            html = html.replace(
+                "LandPlotFinder — клиенты и каталог",
+                "ЛидерСтрой — клиенты и подбор участков",
+                1,
+            )
+            html = html.replace('content="#31473a"', 'content="#201f1e"', 1)
+            html = html.replace(
+                '<link rel="stylesheet" href="/static/v11.css?v=20260925-clients">',
+                '<link rel="stylesheet" href="/static/v11.css?v=20260925-clients">\n'
+                '  <link rel="stylesheet" href="/static/admin-brand.css?v=20260925-lider">',
+                1,
+            )
+            html = html.replace(
+                '<a class="brand" href="#widget" aria-label="LandPlotFinder — клиенты">',
+                '<a class="brand" href="#widget" aria-label="ЛидерСтрой — клиенты">',
+                1,
+            )
+            html = html.replace(
+                '<span><strong>LandPlot</strong><small>Finder</small></span>',
+                '<span><strong>ЛИДЕР СТРОЙ</strong><small>Подбор участков</small></span>',
+                1,
+            )
+            html = html.replace(
+                'id="serviceText">Локальный сервис',
+                'id="serviceText">Сервис подбора',
+                1,
+            )
+            return HTMLResponse(html, headers={"Cache-Control": "no-store"})
         return FileResponse(STATIC_DIR / "index.html")
 
     return app

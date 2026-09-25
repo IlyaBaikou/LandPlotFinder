@@ -75,6 +75,7 @@ LandPlotFinder. Виджет дополнительно фильтрует уж�
 DRY_RUN=false
 ADMIN_USERNAME=admin
 ADMIN_PASSWORD=длинный-пароль-для-панели
+ADMIN_BRAND=liderstroy
 WIDGET_PROFILE_ID=default
 WIDGET_ALLOWED_ORIGINS=https://project.tilda.ws,https://ваш-домен.by
 WIDGET_PHONE_AUTH_MODE=demo
@@ -93,6 +94,8 @@ WEB_SCHEDULER_ENABLED=false
 
 `ADMIN_PASSWORD` закрывает основную панель, настройки и список лидов. Маршруты
 виджета, его JavaScript и проверка работоспособности остаются публичными.
+`ADMIN_BRAND=liderstroy` меняет только оформление закрытой панели на стиль
+компании; standalone-установка без этой переменной сохраняет нейтральную тему.
 
 ## 4. Встраивание в Tilda
 

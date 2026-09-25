@@ -288,7 +288,9 @@ function widgetCriteria(params = {}) {
   const values = [];
   if (params.q) values.push(`Место: ${presentationMode ? 'выбранное направление' : params.q}`);
   if (params.max_price_usd) values.push(`До $${number(params.max_price_usd)}`);
-  if (params.min_area_sotok || params.max_area_sotok) values.push(`Площадь ${number(params.min_area_sotok)}–${number(params.max_area_sotok)} сот.`);
+  if (params.min_area_sotok && params.max_area_sotok) values.push(`Площадь ${number(params.min_area_sotok)}–${number(params.max_area_sotok)} сот.`);
+  else if (params.min_area_sotok) values.push(`Площадь от ${number(params.min_area_sotok)} сот.`);
+  else if (params.max_area_sotok) values.push(`Площадь до ${number(params.max_area_sotok)} сот.`);
   if (params.max_distance_km) values.push(`До ${number(params.max_distance_km)} км`);
   if (params.electricity === 'true') values.push('Нужно электричество');
   if (params.gas === 'true') values.push('Нужен газ');

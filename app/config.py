@@ -90,6 +90,7 @@ class Settings:
     web_scheduler_enabled: bool = True
     admin_username: str = "admin"
     admin_password: Optional[str] = None
+    admin_brand: str = "landplotfinder"
     viewer_username: str = "viewer"
     viewer_password: Optional[str] = None
 
@@ -330,6 +331,7 @@ def load_settings(env_file: Optional[str] = None) -> Settings:
         ),
         admin_username=os.getenv("ADMIN_USERNAME", "admin").strip() or "admin",
         admin_password=os.getenv("ADMIN_PASSWORD") or None,
+        admin_brand=os.getenv("ADMIN_BRAND", "landplotfinder").strip().lower(),
         viewer_username=os.getenv("VIEWER_USERNAME", "viewer").strip() or "viewer",
         viewer_password=os.getenv("VIEWER_PASSWORD") or None,
     )

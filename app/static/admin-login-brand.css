@@ -1,0 +1,51 @@
+:root {
+  color: #202020;
+  background: #f7f7f5;
+}
+
+body {
+  background: radial-gradient(circle at 15% 10%, #fff 0, transparent 38%), #f7f7f5;
+}
+
+main {
+  background: #fff;
+  border-color: #dededb;
+  box-shadow: 0 22px 60px rgba(20, 20, 20, .09);
+}
+
+.mark {
+  background: #ffe17b;
+  color: #202020;
+}
+
+.eyebrow {
+  color: #a4770e;
+}
+
+h1 {
+  font-family: Inter, ui-sans-serif, -apple-system, BlinkMacSystemFont, "Segoe UI", sans-serif;
+  font-weight: 750;
+  letter-spacing: -.035em;
+}
+
+p,
+.hint {
+  color: #666;
+}
+
+input {
+  border-color: #dededb;
+}
+
+input:focus {
+  border-color: #b98711;
+  box-shadow: 0 0 0 3px rgba(255, 225, 123, .35);
+}
+
+button {
+  background: #202020;
+}
+
+button:hover:not(:disabled) {
+  background: #3b3b3b;
+}

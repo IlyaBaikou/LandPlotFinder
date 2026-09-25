@@ -25,7 +25,27 @@ def _settings(tmp_path):
         google_service_account_json=None,
         telegram_bot_token=None,
         telegram_chat_id=None,
+        admin_brand="landplotfinder",
     )
+
+
+def test_liderstroy_admin_brand_is_optional(tmp_path) -> None:
+    settings = _settings(tmp_path)
+    with TestClient(create_app(settings)) as client:
+        generic = client.get("/")
+        assert generic.status_code == 200
+        assert "LandPlotFinder — клиенты и каталог" in generic.text
+        assert "admin-brand.css" not in generic.text
+
+    with TestClient(create_app(replace(settings, admin_brand="liderstroy"))) as client:
+        branded = client.get("/")
+        assert branded.status_code == 200
+        assert "ЛидерСтрой — клиенты и подбор участков" in branded.text
+        assert "admin-brand.css" in branded.text
+        assert "ЛИДЕР СТРОЙ" in branded.text
+        login = client.get("/login")
+        assert "Вход в панель ЛидерСтрой" in login.text
+        assert "admin-login-brand.css" in login.text
 
 
 def _seed_listing(settings) -> int:
